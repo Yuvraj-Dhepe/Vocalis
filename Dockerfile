@@ -32,8 +32,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the backend application code into the container at /app/backend
 COPY backend/ /app/backend/
 
-# Copy the prompts directory into the container at /app/prompts
-COPY prompts/ /app/prompts/
+# Copy the prompts directory (which is inside backend/) into /app/prompts in the container.
+COPY backend/prompts/ /app/prompts/
 
 # Expose port 8000 to the outside world
 EXPOSE 8000
