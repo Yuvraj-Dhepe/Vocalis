@@ -6,17 +6,22 @@ FastAPI application entry point.
 
 import logging
 import uvicorn
-from fastapi import FastAPI, WebSocket, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, Depends, HTTPException, UploadFile, File, Header
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+import io
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+# Renaming to avoid conflict with global Depends if it were an issue, using FastAPI_Depends for clarity
+from fastapi import Depends as FastAPI_Depends
 
 # Import configuration
 from . import config
 
 # Import services
-from .services.transcription import WhisperTranscriber
-from .services.llm import LLMClient
-from .services.tts import TTSClient
+from .services.transcription import GraniteTranscriber
+from .services.llm import OllamaClient
+from .services.tts import ChatterboxTTSClient # MODIFIED
 from .services.vision import vision_service
 
 # Import routes
@@ -49,22 +54,22 @@ async def lifespan(app: FastAPI):
     global transcription_service, llm_service, tts_service
     
     # Initialize transcription service
-    transcription_service = WhisperTranscriber(
-        model_size=cfg["whisper_model"],
-        sample_rate=cfg["audio_sample_rate"]
+    transcription_service = GraniteTranscriber( # MODIFIED
+        model_name=cfg["stt_model_name"],      # MODIFIED from whisper_model
+        input_sample_rate=cfg["audio_sample_rate"] # MODIFIED ensure key exists in cfg
     )
     
     # Initialize LLM service
-    llm_service = LLMClient(
-        api_endpoint=cfg["llm_api_endpoint"]
+    llm_service = OllamaClient( # MODIFIED
+        host=cfg["ollama_host"],
+        model=cfg["ollama_model"]
+        # Temperature and num_predict will use OllamaClient defaults for now
+        # or can be added to config.py and passed here if needed.
     )
     
     # Initialize TTS service
-    tts_service = TTSClient(
-        api_endpoint=cfg["tts_api_endpoint"],
-        model=cfg["tts_model"],
-        voice=cfg["tts_voice"],
-        output_format=cfg["tts_format"]
+    tts_service = ChatterboxTTSClient( # MODIFIED
+        device_setting=cfg["tts_device"]
     )
     
     # Initialize vision service (will download model if not cached)
@@ -82,6 +87,10 @@ async def lifespan(app: FastAPI):
     # but we could add resource release code here if needed (maybe in a future release lex 31/03/25)
     
     logger.info("Shutdown complete")
+
+# Define request model for TTS
+class TTSRequest(BaseModel):
+    text: str
 
 # Create FastAPI application
 app = FastAPI(
@@ -116,6 +125,68 @@ async def root():
     """Root endpoint for health check."""
     return {"status": "ok", "message": "Vocalis backend is running"}
 
+
+@app.post("/api/stt") # Removed dependencies=[FastAPI_Depends(verify_api_key)]
+async def api_speech_to_text(audio_file: UploadFile = File(...)):
+    """
+    Speech-to-Text REST Endpoint.
+    Accepts an audio file and returns the transcription.
+    """
+    if not transcription_service:
+        logger.error("/api/stt: Transcription service not available.")
+        raise HTTPException(status_code=503, detail="Transcription service not available.")
+    try:
+        audio_bytes = await audio_file.read()
+        if not audio_bytes:
+            logger.warning("/api/stt: No audio content provided in uploaded file.")
+            raise HTTPException(status_code=400, detail="No audio content provided.")
+
+        logger.info(f"/api/stt: Received audio file '{audio_file.filename}', size {len(audio_bytes)} bytes for STT.")
+
+        transcript, metadata = transcription_service.transcribe(audio_bytes)
+
+        if "error" in metadata and metadata["error"]:
+            logger.error(f"/api/stt: Transcription engine error: {metadata['error']}")
+            raise HTTPException(status_code=500, detail=f"STT engine error: {metadata['error']}")
+
+        logger.info(f"/api/stt: Transcription successful for '{audio_file.filename}'.")
+        return JSONResponse(content={"transcription": transcript, "metadata": metadata})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in /api/stt endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error during STT processing: {str(e)}")
+
+@app.post("/api/tts") # Removed dependencies=[FastAPI_Depends(verify_api_key)]
+async def api_text_to_speech(request: TTSRequest):
+    """
+    Text-to-Speech REST Endpoint.
+    Accepts text and returns synthesized speech audio (WAV format).
+    """
+    if not tts_service:
+        logger.error("/api/tts: TTS service not available.")
+        raise HTTPException(status_code=503, detail="TTS service not available.")
+    try:
+        if not request.text.strip():
+            logger.warning("/api/tts: Received empty text for synthesis.")
+            raise HTTPException(status_code=400, detail="Text for TTS cannot be empty.")
+
+        logger.info(f"/api/tts: Received text for synthesis: '{request.text[:100]}...'")
+        audio_bytes = await tts_service.async_text_to_speech(request.text)
+
+        if not audio_bytes:
+            logger.error("/api/tts: TTS service returned no audio data for the provided text.")
+            raise HTTPException(status_code=500, detail="TTS engine failed to produce audio for the given text.")
+
+        logger.info(f"/api/tts: Synthesized audio successfully ({len(audio_bytes)} bytes).")
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in /api/tts endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error during TTS processing: {str(e)}")
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -128,29 +199,50 @@ async def health_check():
             "vision": vision_service.is_ready()
         },
         "config": {
-            "whisper_model": config.WHISPER_MODEL,
-            "tts_voice": config.TTS_VOICE,
-            "websocket_port": config.WEBSOCKET_PORT
+            "stt_model_name": cfg.get("stt_model_name", config.STT_MODEL_NAME),
+            "ollama_model": cfg.get("ollama_model", config.OLLAMA_MODEL),
+            "tts_device": cfg.get("tts_device", config.TTS_DEVICE), # MODIFIED for Chatterbox
+            "websocket_port": cfg.get("websocket_port", config.WEBSOCKET_PORT)
         }
     }
 
 @app.get("/config")
 async def get_full_config():
     """Get full configuration."""
-    if not all([transcription_service, llm_service, tts_service]) or not vision_service.is_ready():
-        raise HTTPException(status_code=503, detail="Services not initialized")
+    cfg = config.get_config()
+    if not all([transcription_service, llm_service, tts_service]) or not vision_service.is_ready(): # check vision_service.is_ready()
+        # Check individual services for more granular error reporting if needed
+        if not transcription_service: logger.error("Transcription service not initialized for /config")
+        if not llm_service: logger.error("LLM service not initialized for /config")
+        if not tts_service: logger.error("TTS service not initialized for /config")
+        if not vision_service.is_ready(): logger.error("Vision service not ready for /config")
+        raise HTTPException(status_code=503, detail="One or more services are not initialized or ready.")
     
+    # Ensure services' get_config() methods are called and robust to ongoing changes
+    transcription_config = transcription_service.get_config() if hasattr(transcription_service, 'get_config') else {}
+    llm_config = llm_service.get_config() if hasattr(llm_service, 'get_config') else {}
+    tts_config = tts_service.get_config() if hasattr(tts_service, 'get_config') else {}
+
     return {
-        "transcription": transcription_service.get_config(),
-        "llm": llm_service.get_config(),
-        "tts": tts_service.get_config(),
-        "system": config.get_config()
+        "transcription": transcription_config,
+        "llm": llm_config,
+        "tts": tts_config,
+        "system": cfg
     }
 
 # WebSocket route
 @app.websocket("/ws")
 async def websocket_route(websocket: WebSocket):
     """WebSocket endpoint for bidirectional audio streaming."""
+    # Ensure services are available (they are global, initialized in lifespan)
+    if not all([transcription_service, llm_service, tts_service]):
+        logger.error("Services not fully initialized for WebSocket connection.")
+        # Optionally, close WebSocket or send an error message
+        # await websocket.close(code=1011, reason="Backend services not ready")
+        # return
+        # For now, proceed, but this indicates an issue if it happens post-startup.
+        pass
+
     await websocket_endpoint(
         websocket, 
         transcription_service, 

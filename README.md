@@ -5,10 +5,13 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg?logo=react&logoColor=white)](https://reactjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109.2-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Whisper](https://img.shields.io/badge/Whisper-Faster--Whisper-yellow.svg)](https://github.com/guillaumekln/faster-whisper)
+[![Hugging Face Transformers](https://img.shields.io/badge/🤗%20Transformers-STT%20Models-yellow)](https://huggingface.co/docs/transformers/index)
+[![Ollama](https://img.shields.io/badge/Ollama-LLM%20Integration-blue)](https://ollama.com/)
+[![pyttsx3](https://img.shields.io/badge/pyttsx3-Offline%20TTS-orange)](https://pypi.org/project/pyttsx3/)
 [![Python](https://img.shields.io/badge/Python-3.10-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/Docker-Containerized-blue?logo=docker)](https://www.docker.com/)
 
-A sophisticated AI assistant with speech-to-speech capabilities built on a modern React frontend with a FastAPI backend. Vocalis provides a responsive, low-latency conversational experience with advanced visual feedback.
+A sophisticated AI assistant with speech-to-speech capabilities built on a modern React frontend and a FastAPI backend. Vocalis utilizes **IBM Granite** for Speech-to-Text, **Ollama** for Large Language Model interactions, and **pyttsx3 (Chatterbox)** for Text-to-Speech, all containerized with Docker for easy deployment. It provides a responsive, low-latency conversational experience with advanced visual feedback.
 
 ## Video Demonstration of Setup and Usage
 
@@ -68,14 +71,16 @@ A sophisticated AI assistant with speech-to-speech capabilities built on a moder
 ### 🛠️ Technical Excellence
 
 - **🔍 High-Accuracy VAD** - Superior voice activity detection using custom-built VAD
-- **🗣️ Optimised Whisper Integration** - Faster-Whisper for rapid transcription
-- **🔊 Real-Time TTS** - Chunked audio delivery for immediate playback
-- **🖥️ Hardware Flexibility** - CUDA acceleration with CPU fallback options
-- **🔧 Easy Configuration** - Environment variables and user-friendly setup
+- **🗣️ Advanced STT Integration** - IBM Granite for accurate transcription via Hugging Face Transformers.
+- **🧠 Flexible LLM Integration** - Connects to external Ollama server for powerful language processing.
+- **🔊 High-Quality TTS Engine** - Resemble AI's Chatterbox for state-of-the-art Text-to-Speech synthesis.
+- **🐳 Dockerized Backend** - Complete Docker setup for easy deployment and consistent environments.
+- **🖥️ Hardware Flexibility** - CUDA acceleration for STT and TTS models (where applicable) with CPU fallback.
+- **🔧 Easy Configuration** - Environment variables for all key settings.
 
 ## Quick Start
 
-### Prerequisites
+### Prerequisites for Manual Setup
 
 #### Windows
 - Python 3.10+ installed and in your PATH
@@ -143,8 +148,10 @@ If you prefer to set up the project manually, follow these steps:
    ```bash
    python -m backend.main
    ```
+   - Ensure your `backend/.env` file is configured with `OLLAMA_HOST` pointing to your Ollama server, and other settings like `STT_MODEL_NAME`, `TTS_ENGINE_RATE`, and `TTS_ENGINE_VOICE_ID` are reviewed. (Note: `VOCALIS_API_KEY` previously mentioned for REST endpoints is no longer used for them as they are now unauthenticated for local use).
 
 #### Frontend Setup
+The frontend setup remains the same. It will connect to the backend (either manual or Dockerized) on `ws://localhost:8000/ws`.
 1. Install Node.js dependencies:
    ```bash
    cd frontend
@@ -155,6 +162,44 @@ If you prefer to set up the project manually, follow these steps:
    ```bash
    npm run dev
    ```
+
+### Running with Docker (Recommended for Backend)
+
+This is the recommended way to run the Vocalis backend for a consistent environment.
+
+**Prerequisites:**
+- Docker installed and running.
+- Docker Compose installed.
+- An Ollama server running and accessible from your Docker environment (e.g., on `http://localhost:11434` on your host machine).
+- **NVIDIA Container Toolkit** installed on the host system if GPU acceleration for STT (e.g., with IBM Granite) is desired. The `Dockerfile` is configured to use a CUDA-enabled base image, and `docker-compose.yml` requests GPU resources.
+
+**Steps:**
+1.  **Configure Ollama Connection:**
+    The `docker-compose.yml` is pre-configured to connect to Ollama at `http://host.docker.internal:11434`. This works for Docker Desktop (Mac/Windows).
+    -   **Linux Users:** If `host.docker.internal` doesn't work, you may need to:
+        -   Find your host's IP on the `docker0` bridge (e.g., `ip addr show docker0`) and use that IP in the `OLLAMA_HOST` environment variable within `docker-compose.yml`.
+        -   Or, modify `docker-compose.yml` to run Ollama as another service and use Docker networking.
+    -   You can also set `OLLAMA_HOST` in a `.env` file in the project root, and `docker-compose` can pick it up (see comments in `docker-compose.yml`).
+
+2.  **Build and Run:**
+    Navigate to the project root directory (where `docker-compose.yml` is located) and run:
+    ```bash
+    docker-compose up --build -d
+    ```
+    The `-d` flag runs the containers in detached mode.
+
+3.  **Backend Access:**
+    The backend will be accessible at `http://localhost:8000`. The WebSocket endpoint will be `ws://localhost:8000/ws`.
+
+4.  **Viewing Logs:**
+    ```bash
+    docker-compose logs -f vocalis-backend
+    ```
+
+5.  **Stopping:**
+    ```bash
+    docker-compose down
+    ```
 
 ### Personalising Vocalis
 
@@ -181,26 +226,17 @@ The preferences modal offers several ways to tailor Vocalis to your needs:
 
 These settings are saved automatically and persist between sessions, ensuring a consistent experience tailored to your preferences.
 
-## External Services
+## Core Backend Services
 
-Vocalis is designed to work with OpenAI-compatible API endpoints for both LLM and TTS services:
+Vocalis integrates the following core services for its speech and language processing:
 
-- **LLM (Language Model)**: By default, the backend is configured to use [LM Studio](https://lmstudio.ai/) running locally. This provides a convenient way to run local language models compatible with OpenAI's API format.
-  
-  **Custom Vocalis Model**: For optimal performance, Vocalis includes a purpose-built fine-tuned model: [lex-au/Vocalis-Q4_K_M.gguf](https://huggingface.co/lex-au/Vocalis-Q4_K_M.gguf). This model is based on Meta's LLaMA 3 8B Instruct and specifically optimised for immersive conversational experiences with:
-  - Enhanced spatial and temporal context tracking
-  - Low-latency response generation
-  - Rich, descriptive language capabilities
-  - Efficient resource utilisation through Q4_K_M quantisation
-  - Seamless integration with the Vocalis speech-to-speech pipeline
+- **Speech-to-Text (STT)**: Utilizes **IBM Granite** (specifically `ibm-granite/granite-speech-3.3-2b`) via the Hugging Face `transformers` library. This model provides accurate speech transcription. Configuration is managed by `STT_MODEL_NAME` in `backend/.env`.
 
-- **Text-to-Speech (TTS)**: For voice generation, the system works out of the box with:
-  - [Orpheus-FASTAPI](https://github.com/Lex-au/Orpheus-FastAPI): A high-quality TTS server with OpenAI-compatible endpoints providing rich, expressive voices.
-  
-  You can adjust the endpoint in `.env` to any opensource TTS project. For a lightning-fast alternative:
-  - [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI): A lightning-fast TTS alternative, optimised for minimal latency when speed is the priority over maximum expressiveness.
+- **Large Language Model (LLM)**: Connects to an external **Ollama server**. You need to have Ollama running and have pulled a model (e.g., Llama3, Mistral). The connection URL is configured via `OLLAMA_HOST` (default `http://localhost:11434`) and the model via `OLLAMA_MODEL` (default `llama3`) in `backend/.env`.
 
-Both services can be configured in the `backend/.env` file. The system requires these external services to function properly, as Vocalis acts as an orchestration layer combining speech recognition, language model inference, and speech synthesis.
+- **Text-to-Speech (TTS)**: Integrates **Resemble AI's Chatterbox** (`chatterbox-tts` Python library) for high-quality, local Text-to-Speech synthesis. Configuration for the compute device (`TTS_DEVICE` accepting "auto", "cuda", or "cpu") can be found in `backend/.env`.
+
+These services are orchestrated by the FastAPI backend to provide the full speech-to-speech workflow. Configuration for these and other parameters is primarily managed in the `backend/.env` file.
 
 ## Visual Demo
 
@@ -262,20 +298,19 @@ graph TB
     subgraph "Backend (FastAPI)"
         WSServer[WebSocket Server]
         VAD[Custom Voice Activity Detection]
-        WhisperSTT[Faster Whisper]
-        LLMClient[LLM Client]
-        TTSClient[TTS Client]
+        IBMGraniteSTT[IBM Granite STT]
+        OllamaClient[Ollama Client]
+        ChatterboxTTS[Chatterbox TTS]
         AudioProcessing[Audio Processing]
         VisionService[SmolVLM Vision Service]
         StorageService[Conversation Storage]
         EnvConfig[Environment Config]
     end
     
-    subgraph "Local API Services"
-        LLMEndpoint["LLM API (127.0.0.1:1234)"]
-        TTSEndpoint["TTS API (localhost:5005)"]
+    subgraph "External Services"
+        OllamaServer["Ollama Server (External e.g. http://host.docker.internal:11434)"]
     end
-    
+
     subgraph "Storage"
         SessionFiles["Session JSON Files"]
     end
@@ -285,28 +320,26 @@ graph TB
     SessionManager -->|Session Commands| WebSocket
     WebSocket <-->|WebSocket Protocol| WSServer
     WSServer --> VAD
-    VAD -->|Audio with Speech| WhisperSTT
-    WhisperSTT -->|Transcribed Text| LLMClient
+    VAD -->|Audio with Speech| IBMGraniteSTT
+    IBMGraniteSTT -->|Transcribed Text| OllamaClient
     
     WebSocket -->|Image Data| WSServer
     WSServer -->|Process Image| VisionService
-    VisionService -->|Image Description| LLMClient
+    VisionService -->|Image Description| OllamaClient
     
     WebSocket -->|Session Operations| WSServer
     WSServer -->|Store/Load/List/Delete| StorageService
     StorageService <-->|Read/Write JSON| SessionFiles
     
-    LLMClient -->|API Request| LLMEndpoint
-    LLMEndpoint -->|Response Text| LLMClient
-    LLMClient -->|Response Text| TTSClient
-    TTSClient -->|API Request| TTSEndpoint
-    TTSEndpoint -->|Audio Data| TTSClient
-    TTSClient --> WSServer
+    OllamaClient -->|API Request| OllamaServer
+    OllamaServer -->|Response Text| OllamaClient
+    OllamaClient -->|Response Text| ChatterboxTTS
+    ChatterboxTTS -->|Synthesized Audio| WSServer
     WSServer -->|Audio Response| WebSocket
     WebSocket --> AudioOutput
-    EnvConfig -->|Configuration| WhisperSTT
-    EnvConfig -->|Configuration| LLMClient
-    EnvConfig -->|Configuration| TTSClient
+    EnvConfig -->|Configuration| IBMGraniteSTT
+    EnvConfig -->|Configuration| OllamaClient
+    EnvConfig -->|Configuration| ChatterboxTTS
     EnvConfig -->|Configuration| VisionService
     EnvConfig -->|Configuration| StorageService
     UIState <--> WebSocket
@@ -353,9 +386,9 @@ graph TD
         BE_ConversationManager[Conversation Manager]
         
         subgraph "Services"
-            BE_Transcription[Speech Transcription & VAD]
-            BE_LLM[LLM Client]
-            BE_TTS[TTS Client]
+            BE_Transcription[IBM Granite STT & VAD]
+            BE_LLM[Ollama Client]
+            BE_TTS[Chatterbox TTS]
             BE_Vision[SmolVLM Vision Service]
             BE_Storage[Conversation Storage]
         end
@@ -371,8 +404,7 @@ graph TD
     
     %% External Services & Storage
     subgraph "External Services"
-        LLM_API[LM Studio OpenAI-compatible API]
-        TTS_API[Orpheus-FASTAPI TTS]
+        Ollama_Srv[Ollama Server (e.g. http://host.docker.internal:11434)]
     end
     
     subgraph "Persistent Storage"
@@ -389,12 +421,10 @@ graph TD
     BE_Transcription -->|Voice Activity Detection| BE_Transcription
     BE_Transcription -->|Transcribed Text| BE_ConversationManager
     BE_ConversationManager -->|Format Prompt| BE_LLM
-    BE_LLM -->|API Request| LLM_API
-    LLM_API -->|Response Text| BE_LLM
+    BE_LLM -->|API Request| Ollama_Srv
+    Ollama_Srv -->|Response Text| BE_LLM
     BE_LLM -->|Response Text| BE_TTS
-    BE_TTS -->|API Request| TTS_API
-    TTS_API -->|Audio Data| BE_TTS
-    BE_TTS -->|Processed Audio| BE_WebSocket
+    BE_TTS -->|Synthesized Audio Data| BE_WebSocket # Chatterbox (as library) is internal
     
     BE_WebSocket -->|Audio Response| FE_WebSocket
     FE_WebSocket -->|Audio Data| FE_AudioService
@@ -453,8 +483,8 @@ graph TD
     
     %% Configuration
     BE_Config -->|Environment Settings| BE_Main
-    BE_Config -->|API Settings| BE_LLM
-    BE_Config -->|API Settings| BE_TTS
+    BE_Config -->|API Settings & Model| BE_LLM
+    BE_Config -->|Engine Settings| BE_TTS
     BE_Config -->|Model Config| BE_Transcription
     BE_Config -->|Vision Settings| BE_Vision
     BE_Config -->|Storage Settings| BE_Storage
@@ -481,14 +511,14 @@ UI_Orb -->|Visualises States| FE_State
     
     class FE_Audio,FE_WebSocket,FE_UI,FE_State,FE_AudioService,FE_WebSocketService,UI_Orb,UI_Stars,UI_Chat,UI_Prefs,UI_Sidebar,FE_ImageUpload,FE_SessionUI,UI_Sessions frontend
     class BE_Main,BE_Config,BE_WebSocket,BE_Transcription,BE_LLM,BE_TTS,BE_Vision,BE_Storage backend
-    class LLM_API,TTS_API external
+    class Ollama_Srv external # MODIFIED
     class FE_InterruptDetector,FE_SilenceDetector,BE_InterruptHandler,BE_GreetingSystem,BE_FollowUpSystem,BE_ConversationManager,BE_ContextMemory,BE_VisionContext,BE_SessionMgmt feature
     class JSON_Files storage
 ```
 
 ## Low-Latency TTS Streaming Architecture
 
-For achieving true low-latency in the speech system, we implement streaming TTS with chunked delivery and barge-in capability:
+The backend now uses pyttsx3 for TTS, which generates audio in one go rather than streaming chunks from an external API. The complete audio is then sent to the frontend. While `pyttsx3` itself is not streaming in the sense of partial audio generation, the overall system still aims for low latency by processing each step (STT, LLM, TTS) efficiently.
 
 ```mermaid
 sequenceDiagram
@@ -499,45 +529,30 @@ sequenceDiagram
     participant SessionMgr as Session Manager
     participant Backend as FastAPI Backend
     participant IntHandler as Backend Interrupt Handler
-    participant Transcription as Speech Transcription & VAD
+    participant Transcription as IBM Granite STT & VAD
     participant VisionService as Vision Service (SmolVLM)
     participant StorageService as Conversation Storage
-    participant LLM as LLM API (LM Studio)
-    participant TTS as TTS API (Orpheus-FASTAPI)
+    participant LLM as Ollama Server
+    participant TTS as Chatterbox TTS Engine (Internal)
     
     Note over Frontend,TTS: Normal Speech Flow
     
     Frontend->>Backend: Audio stream (chunks)
     Backend->>Transcription: Process audio
-    Transcription->>Transcription: Voice activity detection
-    Transcription->>Transcription: Speech-to-text
+    Transcription->>Transcription: Speech-to-text (IBM Granite)
     Transcription->>Backend: Transcribed text
-    Backend->>LLM: Text request with context
+    Backend->>LLM: Text request with context (to Ollama)
     activate LLM
-    LLM-->>Backend: Text response (streaming)
+    LLM-->>Backend: Text response
     deactivate LLM
-    Note over Backend: Begin TTS processing
-    Backend->>TTS: Request TTS
+    Note over Backend: Begin TTS processing (Chatterbox)
+    Backend->>TTS: Request TTS synthesis
     activate TTS
-    
-    %% Show parallel processing
-    par Streaming audio playback
-        TTS-->>Backend: Audio chunk 1
-        Backend-->>Frontend: Audio chunk 1
-        Frontend->>AudioBuffer: Queue chunk
-        AudioBuffer->>Frontend: Begin playback
-        
-        TTS-->>Backend: Audio chunk 2
-        Backend-->>Frontend: Audio chunk 2
-        Frontend->>AudioBuffer: Queue chunk
-        AudioBuffer->>Frontend: Continue playback
-        
-        TTS-->>Backend: Audio chunk n
-        Backend-->>Frontend: Audio chunk n
-        Frontend->>AudioBuffer: Queue chunk
-        AudioBuffer->>Frontend: Continue playback
-    end
+    TTS-->>Backend: Complete audio data (WAV)
     deactivate TTS
+    Backend-->>Frontend: Complete audio data (Base64 encoded)
+    Frontend->>AudioBuffer: Queue audio
+    AudioBuffer->>Frontend: Begin playback
     
     Note over Frontend,TTS: Session Management Flow
     
@@ -567,11 +582,11 @@ sequenceDiagram
     activate LLM
     LLM-->>Backend: Image-informed response
     deactivate LLM
-    Backend->>TTS: Request TTS
+    Backend->>TTS: Request TTS (Chatterbox)
     activate TTS
-    TTS-->>Backend: Audio response
-    Backend-->>Frontend: Stream audio response
+    TTS-->>Backend: Complete audio data
     deactivate TTS
+    Backend-->>Frontend: Send complete audio data
     
     Note over Frontend,TTS: Interrupt Flow (Barge-in)
     
@@ -601,11 +616,11 @@ sequenceDiagram
         activate LLM
         LLM-->>Backend: Follow-up response
         deactivate LLM
-        Backend->>TTS: Convert to speech
+    Backend->>TTS: Convert to speech (Chatterbox)
         activate TTS
-        TTS-->>Backend: Follow-up audio
-        Backend-->>Frontend: Stream follow-up audio
+    TTS-->>Backend: Complete follow-up audio
         deactivate TTS
+    Backend-->>Frontend: Send complete follow-up audio
         Frontend->>AudioBuffer: Play follow-up
     end
 ```
@@ -709,49 +724,25 @@ Vocalis now includes visual understanding capabilities through the SmolVLM-256M-
 
 ## Latency Optimisation
 
-Vocalis achieves exceptional low-latency performance through carefully optimised components:
+Vocalis aims for low-latency performance through efficient processing:
 
 ### Speech Recognition Performance
 
-The system uses Faster-Whisper with the `base.en` model and a beam size of 2, striking an optimal balance between accuracy and speed. This configuration achieves:
+The system now uses **IBM Granite** (e.g., `ibm-granite/granite-speech-3.3-2b`) via Hugging Face Transformers. Performance characteristics depend on the specific Granite model variant chosen, hardware (CPU/GPU), and batching if implemented. These models are designed for good accuracy and reasonable speed. The `STT_MODEL_NAME` in `backend/.env` allows selection of different compatible STT models.
 
-- **ASR Processing**: ~0.43 seconds for typical utterances
-- **Response Generation**: ~0.18 seconds
-- **Total Round-Trip Latency**: ~0.61 seconds
+### LLM Performance
 
-Real-world example from system logs:
-```
-INFO:faster_whisper:Processing audio with duration 00:02.229
-INFO:backend.services.transcription:Transcription completed in 0.51s: Hi, how are you doing today?...
-INFO:backend.services.tts:Sending TTS request with 147 characters of text
-INFO:backend.services.tts:Received TTS response after 0.16s, size: 390102 bytes
-```
+LLM response time depends on the model loaded into the **Ollama server** and the server's hardware. The `OLLAMA_MODEL` in `backend/.env` specifies which model Ollama should use.
+
+### TTS Performance
+
+**Resemble AI's Chatterbox** is used for TTS. Performance will depend on the complexity of the text and the hardware (CPU/GPU) it runs on. It's designed for high quality and good performance. The `TTS_DEVICE` setting in `backend/.env` can be used to specify CPU or CUDA.
 
 ### Customising Performance
 
-You can adjust these settings to optimise for your specific needs:
-
-1. **Model Size**: In `.env`, modify `WHISPER_MODEL=base.en` 
-   - Options: tiny.en, base.en, small.en, medium.en, large
-   - Smaller models = faster processing, potentially lower accuracy
-   - Larger models = more accurate, but increased latency
-
-2. **Beam Size**: In `backend/services/transcription.py`, modify the `beam_size` parameter
-   - Default: 2
-   - Range: 1-5 (1 = fastest, 5 = most accurate)
-   - Located in the `__init__` method of the `WhisperTranscriber` class
-
-### Latency vs. Accuracy Trade-offs
-
-| Model | Beam Size | Approximate ASR Time | Accuracy |
-|------|-----------|---------------------|----------|
-| tiny.en | 1 | ~0.01s | Lower |
-| base.en | 2 | ~0.03s | Good |
-| small.en | 3 | ~0.10s | Better |
-| medium.en | 4 | ~0.25s | Very Good |
-| large | 5 | ~0.50s | Best |
-
-With optimisations in place, Vocalis can achieve total processing latencies well under 250ms when using smaller models, which is typically perceived as "immediate" by users.
+- **STT Model**: Choose a smaller or larger STT model via `STT_MODEL_NAME` (if other compatible HuggingFace models are used) for a trade-off between speed and accuracy.
+- **LLM Model**: Select different models in your Ollama server and configure `OLLAMA_MODEL` in `backend/.env`. Smaller Ollama models will generally be faster.
+- **Hardware**: Running the backend on a machine with a CUDA-capable GPU will significantly speed up STT if a GPU-compatible STT model is used and correctly configured. Ollama server performance also heavily depends on its host hardware.
 
 ## Project Structure
 
@@ -816,13 +807,15 @@ uvicorn==0.27.1
 python-dotenv==1.0.1
 websockets==12.0
 numpy==1.26.4
-transformers
-faster-whisper==1.1.1
 requests==2.31.0
 python-multipart==0.0.9
-torch==2.0.1
-ctranslate2==3.10.0
+torch>=2.0.1
+torchaudio>=2.0.1
 ffmpeg-python==0.2.0
+transformers~=4.40.0
+soundfile~=0.12.1
+ollama==0.5.1
+pyttsx3==2.90
 ```
 
 ### Frontend

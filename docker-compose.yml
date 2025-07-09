@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  vocalis-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the conversations directory to persist session data
+      # Assumes 'conversations' directory exists at the same level as docker-compose.yml
+      - ./conversations:/app/conversations
+    environment:
+      # PYTHONUNBUFFERED ensures Python output is sent straight to terminal (useful for logs)
+      - PYTHONUNBUFFERED=1
+
+      # --- Ollama Configuration ---
+      # For Docker Desktop (Mac/Windows), host.docker.internal resolves to the host's IP.
+      # For Linux, you might need to replace host.docker.internal with your host's actual IP address
+      # on the Docker bridge network (e.g., 172.17.0.1 if that's your docker0 IP),
+      # or run Ollama in a container and use Docker networking.
+      # This setup assumes Ollama is running on the host machine and accessible.
+      - OLLAMA_HOST=http://host.docker.internal:11434
+
+      # --- API Key for REST Endpoints ---
+      # You can override this in your own .env file at the root of the project,
+      # and docker-compose will pick it up if this line is uncommented:
+      # env_file:
+      #  - .env
+      # If not overridden, it will use the default from backend/.env inside the container.
+      # For explicit override here (takes precedence over backend/.env):
+      # - VOCALIS_API_KEY=${VOCALIS_API_KEY:-development_secret_key_compose}
+      # The VOCALIS_API_KEY is no longer actively checked by the local REST endpoints.
+      # If set here or in a root .env, it would be passed to the container,
+      # but the application currently doesn't use it for these specific REST APIs.
+      # Removing the explicit setting from here to simplify.
+
+      # --- Other configurations can be set here if needed to override backend/.env ---
+      # e.g., - OLLAMA_MODEL=another_model_name
+      # By default, values from backend/.env (copied during build) will be used unless overridden here.
+
+    # Healthcheck (optional, but good practice)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s # Give time for model loading
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU. Use 'all' to request all available GPUs.
+              capabilities: [gpu] # Specify 'gpu' capability.
+
+    restart: unless-stopped
+    # For development, you might want to mount the backend code for live reloading,
+    # but this requires dev dependencies and uvicorn --reload inside the container.
+    # For production-like build, this is omitted.
+    # volumes:
+    #   - ./backend:/app/backend
+    #   - ./prompts:/app/prompts
+    # The Dockerfile already copies these, so this would be for live dev.
+    # Make sure your .dockerignore prevents unwanted files from being copied during build.
+    # (No .dockerignore is being created in this task, but good to note)
+
+# Note: If you are on Linux and host.docker.internal does not work for OLLAMA_HOST,
+# you may need to find your host's IP address on the Docker network.
+# One way is to run 'ip addr show docker0' and use the inet address.
+# Alternatively, you can run Ollama as another service in this docker-compose file
+# and use Docker's internal networking (e.g., OLLAMA_HOST=http://ollama:11434).
+# This current configuration assumes an externally running Ollama instance.

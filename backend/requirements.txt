@@ -3,9 +3,12 @@ uvicorn==0.27.1
 python-dotenv==1.0.1
 websockets==12.0
 numpy==1.26.4
-faster-whisper==1.1.1
 requests==2.31.0
 python-multipart==0.0.9
 torch>=2.0.1
+torchaudio>=2.0.1
 ffmpeg-python==0.2.0
-transformers>=4.31.0
+transformers~=4.40.0
+soundfile~=0.12.1
+ollama==0.5.1
+chatterbox-tts~=0.1.2

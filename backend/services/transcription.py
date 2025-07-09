@@ -1,197 +1,204 @@
 """
 Speech-to-Text Transcription Service
 
-Uses Faster Whisper to transcribe speech audio.
+Uses IBM Granite via Hugging Face Transformers to transcribe speech audio.
 """
 
 import numpy as np
 import logging
-import io  # For BytesIO
-from typing import Dict, Any, List, Optional, Tuple
-from faster_whisper import WhisperModel
+import io
+from typing import Dict, Any, Tuple
 import time
-import torch  # For CUDA availability check
+import torch
+import torchaudio
+from torchaudio import transforms as T
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class WhisperTranscriber:
+class GraniteTranscriber:
     """
-    Speech-to-Text service using Faster Whisper.
-    
-    This class handles transcription of speech audio segments.
+    Speech-to-Text service using IBM Granite model.
     """
     
     def __init__(
         self,
-        model_size: str = "base",
-        device: str = None,
-        compute_type: str = None,
-        beam_size: int = 2,
-        sample_rate: int = 44100
+        model_name: str = "ibm-granite/granite-speech-3.3-2b",
+        input_sample_rate: int = 44100, # Sample rate of audio from frontend
+        device: str = None
     ):
         """
         Initialize the transcription service.
         
         Args:
-            model_size: Whisper model size (tiny.en, base.en, small.en, medium.en, large)
-            device: Device to run model on ('cpu' or 'cuda'), if None will auto-detect
-            compute_type: Model computation type (int8, int16, float16, float32), if None will select based on device
-            beam_size: Beam size for decoding
-            sample_rate: Audio sample rate in Hz
+            model_name: Hugging Face model name for Granite STT.
+            input_sample_rate: The sample rate of the incoming audio.
+            device: Device to run model on ('cpu' or 'cuda'), if None will auto-detect.
         """
-        self.model_size = model_size
-        
-        # Auto-detect device if not specified
+        self.model_name = model_name
+        self.input_sample_rate = input_sample_rate
+        self.model_target_sample_rate = 16000  # Granite models typically expect 16kHz
+
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self.device = device
             
-        # Select appropriate compute type based on device if not specified
-        if compute_type is None:
-            self.compute_type = "float16" if self.device == "cuda" else "int8"
-        else:
-            self.compute_type = compute_type
-            
-        self.beam_size = beam_size
-        self.sample_rate = sample_rate
+        logger.info(f"Initializing Granite Transcriber with model={self.model_name}, device={self.device}")
         
-        # Initialize model
         self._initialize_model()
         
-        # State tracking
         self.is_processing = False
-        
-        logger.info(f"Initialized Whisper Transcriber with model={model_size}, "
-                   f"device={self.device}, compute_type={self.compute_type}")
-    
+
     def _initialize_model(self):
-        """Initialize Whisper model."""
+        """Initialize Granite model and processor."""
         try:
-            # Load the model
-            self.model = WhisperModel(
-                self.model_size,  # Pass as positional argument, not keyword
-                device=self.device,
-                compute_type=self.compute_type
-            )
-            logger.info(f"Successfully loaded Whisper model: {self.model_size}")
+            self.processor = AutoProcessor.from_pretrained(self.model_name)
+            self.model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name).to(self.device)
+            self.model.eval() # Set model to evaluation mode
+
+            # Pre-build resampler if input and target sample rates differ
+            if self.input_sample_rate != self.model_target_sample_rate:
+                self.resampler = T.Resample(
+                    orig_freq=self.input_sample_rate,
+                    new_freq=self.model_target_sample_rate
+                ).to(self.device)
+                logger.info(f"Resampler configured: {self.input_sample_rate}Hz -> {self.model_target_sample_rate}Hz")
+            else:
+                self.resampler = None
+
+            logger.info(f"Successfully loaded Granite model and processor: {self.model_name}")
         except Exception as e:
-            logger.error(f"Failed to load Whisper model: {e}")
+            logger.error(f"Failed to load Granite model or processor: {e}")
             raise
-    
-    def transcribe(self, audio: np.ndarray) -> Tuple[str, Dict[str, Any]]:
+
+    def transcribe(self, audio_bytes: bytes) -> Tuple[str, Dict[str, Any]]:
         """
         Transcribe audio data to text.
         
         Args:
-            audio: Audio data as numpy array
+            audio_bytes: Raw audio data as bytes (expected to be WAV format).
             
         Returns:
             Tuple[str, Dict[str, Any]]: 
                 - Transcribed text
-                - Dictionary with additional information (confidence, language, etc.)
+                - Dictionary with additional information (processing_time)
         """
         start_time = time.time()
         self.is_processing = True
         
         try:
-            # Handle WAV data (if audio is in uint8 format, it contains WAV headers)
-            if audio.dtype == np.uint8:
-                # First check the RIFF header to confirm this is WAV data
-                header = bytes(audio[:44])
-                if header[:4] == b'RIFF' and header[8:12] == b'WAVE':
-                    # Create a file-like object that Whisper can read from
-                    audio_file = io.BytesIO(bytes(audio))
-                    # The transcribe method expects a file-like object with read method
-                    audio = audio_file
-                else:
-                    # Not a proper WAV header
-                    logger.warning("Received audio data with incorrect WAV header")
-                    # Attempt to process as raw data
-                    audio = audio.astype(np.float32) / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
-            else:
-                # Normalize audio if it's raw float data
-                audio = audio.astype(np.float32) / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
+            audio_file = io.BytesIO(audio_bytes)
+            waveform, sr = torchaudio.load(audio_file)
+            waveform = waveform.to(self.device)
+
+            # Ensure mono
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
             
-            # Transcribe
-            segments, info = self.model.transcribe(
-                audio, 
-                beam_size=self.beam_size,
-                language="en",  # Force English language
-                vad_filter=False  # Disable VAD filter since we handle it in the frontend
+            # Resample if necessary
+            if self.resampler and sr != self.model_target_sample_rate:
+                if sr != self.input_sample_rate: # If loaded SR is not what we configured for resampler
+                    # This case might happen if WAV file has different SR than expected
+                    # Re-create resampler on the fly or log warning
+                    logger.warning(f"Audio SR ({sr}Hz) differs from expected input SR ({self.input_sample_rate}Hz). Re-initializing resampler.")
+                    current_resampler = T.Resample(orig_freq=sr, new_freq=self.model_target_sample_rate).to(self.device)
+                    waveform = current_resampler(waveform)
+                else: # SR matches expected input for resampler
+                    waveform = self.resampler(waveform)
+            elif sr != self.model_target_sample_rate:
+                 # No pre-built resampler, but SR mismatch exists
+                logger.warning(f"Audio SR ({sr}Hz) differs from model target SR ({self.model_target_sample_rate}Hz) and no pre-built resampler. Attempting dynamic resampling.")
+                current_resampler = T.Resample(orig_freq=sr, new_freq=self.model_target_sample_rate).to(self.device)
+                waveform = current_resampler(waveform)
+
+
+            # Prepare text prompt for Granite model (as per Hugging Face example)
+            # Using a simplified system prompt for transcription purposes.
+            chat_prompt = [
+                {"role": "system", "content": "You are an ASR system. Transcribe the audio accurately."},
+                {"role": "user", "content": "<|audio|>Transcribe the provided audio snippet."},
+            ]
+            text_input_for_prompt = self.processor.tokenizer.apply_chat_template(
+                chat_prompt, tokenize=False, add_generation_prompt=True
+            )
+
+            # Process audio and text prompt
+            # The processor expects a 1D numpy array or list of floats for audio.
+            # Waveform is currently a 2D tensor [1, num_samples], so squeeze and convert.
+            processed_audio = waveform.squeeze().cpu().numpy()
+
+            model_inputs = self.processor(
+                text=text_input_for_prompt,
+                audio=processed_audio,
+                sampling_rate=self.model_target_sample_rate, # Pass the sample rate of the audio given to processor
+                return_tensors="pt",
+            ).to(self.device)
+
+            # Generate transcription
+            # Adjust generation parameters as needed, e.g., num_beams for quality vs. speed
+            generated_outputs = self.model.generate(
+                **model_inputs,
+                max_new_tokens=256, # Max length of the transcription
+                num_beams=3,        # Beam search can improve quality
+                # temperature=1.0,    # Default, for less random transcription
+                # do_sample=False,    # Default for generate if num_beams > 1
             )
             
-            # Collect all segment texts
-            text_segments = [segment.text for segment in segments]
-            full_text = " ".join(text_segments).strip()
+            # Decode the generated tokens, removing the prompt part
+            # This logic is specific to how Granite models with text prompts return outputs.
+            num_input_tokens = model_inputs["input_ids"].shape[-1]
+            # Ensure generated_outputs is correctly indexed if it's a sequence/tuple
+            output_ids = generated_outputs[0] if isinstance(generated_outputs, (list, tuple)) else generated_outputs
             
-            # Calculate processing time
+            # Check if output_ids has enough tokens
+            if output_ids.shape[-1] <= num_input_tokens:
+                transcription = "" # Or handle as an error/empty transcription
+                logger.warning("Not enough tokens in output to decode transcription after prompt.")
+            else:
+                new_tokens = torch.unsqueeze(output_ids[num_input_tokens:], dim=0)
+                transcription = self.processor.tokenizer.batch_decode(
+                    new_tokens, skip_special_tokens=True, add_special_tokens=False
+                )[0].strip()
+
             processing_time = time.time() - start_time
-            logger.info(f"Transcription completed in {processing_time:.2f}s: {full_text[:50]}...")
+            logger.info(f"Granite transcription completed in {processing_time:.2f}s: {transcription[:100]}...")
             
             metadata = {
-                "confidence": getattr(info, "avg_logprob", 0),
-                "language": getattr(info, "language", "en"),
                 "processing_time": processing_time,
-                "segments_count": len(text_segments)
+                "language": "en", # Assuming English for now as per typical Granite use
+                # Granite generate doesn't directly give segment confidence like faster-whisper
             }
             
-            return full_text, metadata
+            return transcription, metadata
             
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            return "", {"error": str(e)}
+            logger.error(f"Granite transcription error: {e}", exc_info=True)
+            return "", {"error": str(e), "processing_time": time.time() - start_time}
         finally:
             self.is_processing = False
-    
-    def transcribe_streaming(self, audio_generator):
-        """
-        Stream transcription results from an audio generator.
-        
-        Args:
-            audio_generator: Generator yielding audio chunks
             
-        Yields:
-            Partial transcription results as they become available
-        """
-        self.is_processing = True
-        
-        try:
-            # Process the streaming transcription
-            segments = self.model.transcribe_with_vad(
-                audio_generator,
-                language="en"
-            )
-            
-            # Yield each segment as it's transcribed
-            for segment in segments:
-                yield {
-                    "text": segment.text,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "confidence": segment.avg_logprob
-                }
-                
-        except Exception as e:
-            logger.error(f"Streaming transcription error: {e}")
-            yield {"error": str(e)}
-        finally:
-            self.is_processing = False
-    
     def get_config(self) -> Dict[str, Any]:
         """
         Get the current configuration.
-        
-        Returns:
-            Dict containing the current configuration
         """
         return {
-            "model_size": self.model_size,
+            "model_name": self.model_name,
             "device": self.device,
-            "compute_type": self.compute_type,
-            "beam_size": self.beam_size,
-            "sample_rate": self.sample_rate,
-            "is_processing": self.is_processing
+            "input_sample_rate": self.input_sample_rate,
+            "model_target_sample_rate": self.model_target_sample_rate,
+            "is_processing": self.is_processing,
         }
+
+```
+A few notes on the implementation:
+- The `audio_bytes` input is assumed to be loadable by `torchaudio.load` (e.g. WAV format). The existing code in `websocket.py` decodes base64 audio and passes bytes, which should be fine.
+- Resampling is handled. I added a check in case the loaded audio's SR doesn't match the `input_sample_rate` used to initialize the pre-built resampler.
+- The Granite model uses a chat-like prompt structure that includes an `<|audio|>` tag. I've adapted this from the Hugging Face example.
+- Decoding the output requires stripping the input prompt tokens, which is also adapted from the example.
+- Error handling for `generated_outputs` shape is added.
+- Basic metadata (processing time, language) is returned. Detailed confidence scores per segment are not standard with this `generate` approach.
+
+Next, I need to update `backend/main.py` to use this new `GraniteTranscriber` and the new config values.

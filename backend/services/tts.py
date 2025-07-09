@@ -1,228 +1,147 @@
 """
-Text-to-Speech Service
-
-Handles communication with the local TTS API endpoint.
+Text-to-Speech Service using Resemble AI's Chatterbox.
 """
 
-import json
-import requests
-import logging
-import io
-import time
-import base64
 import asyncio
-from typing import Dict, Any, List, Optional, BinaryIO, Generator, AsyncGenerator
+import logging
+import time
+import io
+import torch
+import torchaudio # For saving tensor to WAV bytes
 
-# Configure logging
+# Attempt to import ChatterboxTTS, handle if not installed during early dev
+try:
+    from chatterbox.tts import ChatterboxTTS
+except ImportError:
+    ChatterboxTTS = None
+    logging.error("ChatterboxTTS library not found. Please install chatterbox-tts.")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TTSClient:
+class ChatterboxTTSClient:
     """
-    Client for communicating with a local TTS API.
-    
-    This class handles requests to a locally hosted TTS API that follows
-    the OpenAI API format for text-to-speech generation.
+    Text-to-Speech service using Resemble AI's Chatterbox.
     """
-    
-    def __init__(
-        self,
-        api_endpoint: str = "http://localhost:5005/v1/audio/speech",
-        model: str = "tts-1",
-        voice: str = "tara",
-        output_format: str = "wav",
-        speed: float = 1.0,
-        timeout: int = 60,
-        chunk_size: int = 4096
-    ):
+    def __init__(self, device_setting: str = "auto"):
         """
-        Initialize the TTS client.
-        
+        Initialize the ChatterboxTTS client.
+
         Args:
-            api_endpoint: URL of the local TTS API
-            model: TTS model name to use
-            voice: Voice to use for synthesis
-            output_format: Output audio format (mp3, opus, aac, flac)
-            speed: Speech speed multiplier (0.25 to 4.0)
-            timeout: Request timeout in seconds
-            chunk_size: Size of audio chunks to stream in bytes
+            device_setting: Preferred device ("auto", "cuda", "cpu").
         """
-        self.api_endpoint = api_endpoint
-        self.model = model
-        self.voice = voice
-        self.output_format = output_format
-        self.speed = speed
-        self.timeout = timeout
-        self.chunk_size = chunk_size
-        
-        # State tracking
+        self.device_setting = device_setting
+        self.actual_device = self._determine_device()
+        self.model = None
+        self.sample_rate = None # Will be set by the loaded model
         self.is_processing = False
-        self.last_processing_time = 0
-        
-        logger.info(f"Initialized TTS Client with endpoint={api_endpoint}, "
-                   f"model={model}, voice={voice}")
-    
-    def text_to_speech(self, text: str) -> bytes:
-        """
-        Convert text to speech audio.
-        
-        Args:
-            text: Text to convert to speech
-            
-        Returns:
-            Audio data as bytes
-        """
-        self.is_processing = True
-        start_time = time.time()
-        
+        self.last_processing_time = 0.0
+
+        if ChatterboxTTS is None:
+            logger.error("ChatterboxTTS library failed to import. TTS service will be unavailable.")
+            return
+
         try:
-            # Prepare request payload
-            payload = {
-                "model": self.model,
-                "input": text,
-                "voice": self.voice,
-                "response_format": self.output_format,
-                "speed": self.speed
-            }
+            logger.info(f"Initializing ChatterboxTTSClient with device setting: '{self.device_setting}', resolved to: '{self.actual_device}'")
+            # from_pretrained will download the model on first run if not cached by chatterbox
+            self.model = ChatterboxTTS.from_pretrained(device=self.actual_device)
             
-            logger.info(f"Sending TTS request with {len(text)} characters of text")
-            
-            # Send request to TTS API
-            response = requests.post(
-                self.api_endpoint,
-                json=payload,
-                timeout=self.timeout
-            )
-            
-            # Check if request was successful
-            response.raise_for_status()
-            
-            # Get audio content
-            audio_data = response.content
-            
-            # Calculate processing time
-            self.last_processing_time = time.time() - start_time
-            
-            logger.info(f"Received TTS response after {self.last_processing_time:.2f}s, "
-                       f"size: {len(audio_data)} bytes")
-            
-            return audio_data
-            
-        except requests.RequestException as e:
-            logger.error(f"TTS API request error: {e}")
-            raise
+            if not self.model:
+                logger.error("ChatterboxTTS.from_pretrained returned None or failed. TTS will not be available.")
+                return # Stop initialization if model loading failed
+
+            self.sample_rate = self.model.sr
+            logger.info(f"Initialized ChatterboxTTSClient successfully. Model loaded on '{self.actual_device}'. Sample rate: {self.sample_rate}Hz.")
         except Exception as e:
-            logger.error(f"TTS processing error: {e}")
-            raise
-        finally:
-            self.is_processing = False
-    
-    def stream_text_to_speech(self, text: str) -> Generator[bytes, None, None]:
-        """
-        Stream audio data from the TTS API.
+            logger.error(f"Failed to initialize ChatterboxTTS model: {e}", exc_info=True)
+            self.model = None # Ensure model is None if init fails
+
+    def _determine_device(self) -> str:
+        """Determines the actual device to use based on setting and availability."""
+        if self.device_setting.lower() == "cuda":
+            if torch.cuda.is_available():
+                return "cuda"
+            else:
+                logger.warning("TTS: CUDA requested but not available. Falling back to CPU.")
+                return "cpu"
+        elif self.device_setting.lower() == "cpu":
+            return "cpu"
+        else: # "auto" or any other/default value
+            if torch.cuda.is_available():
+                logger.info("TTS: Auto-detected CUDA, using GPU.")
+                return "cuda"
+            else:
+                logger.info("TTS: CUDA not available, using CPU.")
+                return "cpu"
+
+    def _generate_sync(self, text: str) -> torch.Tensor:
+        """Synchronous (blocking) method to generate speech waveform."""
+        if not self.model:
+            raise RuntimeError("ChatterboxTTS model is not initialized or failed to load.")
         
-        Args:
-            text: Text to convert to speech
-            
-        Yields:
-            Chunks of audio data
-        """
-        self.is_processing = True
-        start_time = time.time()
-        
-        try:
-            # Prepare request payload
-            payload = {
-                "model": self.model,
-                "input": text,
-                "voice": self.voice,
-                "response_format": self.output_format,
-                "speed": self.speed
-            }
-            
-            logger.info(f"Sending streaming TTS request with {len(text)} characters of text")
-            
-            # Send request to TTS API
-            with requests.post(
-                self.api_endpoint,
-                json=payload,
-                timeout=self.timeout,
-                stream=True
-            ) as response:
-                response.raise_for_status()
-                
-                # Check if streaming is supported by the API
-                is_chunked = response.headers.get('transfer-encoding', '') == 'chunked'
-                
-                if is_chunked:
-                    # The API supports streaming
-                    for chunk in response.iter_content(chunk_size=self.chunk_size):
-                        if chunk:
-                            yield chunk
-                else:
-                    # The API doesn't support streaming, but we'll fake it by
-                    # splitting the response into chunks
-                    audio_data = response.content
-                    total_chunks = (len(audio_data) + self.chunk_size - 1) // self.chunk_size
-                    
-                    for i in range(total_chunks):
-                        start_idx = i * self.chunk_size
-                        end_idx = min(start_idx + self.chunk_size, len(audio_data))
-                        yield audio_data[start_idx:end_idx]
-                
-            # Calculate processing time
-            self.last_processing_time = time.time() - start_time
-            logger.info(f"Completed TTS streaming after {self.last_processing_time:.2f}s")
-            
-        except requests.RequestException as e:
-            logger.error(f"TTS API streaming request error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"TTS streaming error: {e}")
-            raise
-        finally:
-            self.is_processing = False
-    
+        # According to Chatterbox documentation, model.generate() is synchronous.
+        # It returns a Torch tensor.
+        logger.debug(f"Chatterbox sync generate for: '{text[:30]}...'")
+        wav_tensor = self.model.generate(text)
+        logger.debug("Chatterbox sync generate completed.")
+        return wav_tensor
+
     async def async_text_to_speech(self, text: str) -> bytes:
         """
-        Asynchronously generate audio data from the TTS API.
-        
-        This method provides asynchronous TTS capability by running
-        the synchronous method in a thread.
-        
-        Args:
-            text: Text to convert to speech
-            
-        Returns:
-            Complete audio data as bytes
+        Asynchronously convert text to speech audio bytes using Chatterbox.
+        The generated audio is in WAV format.
         """
+        if not self.model:
+            logger.error("Cannot generate speech: ChatterboxTTS model is not available.")
+            return b"" # Return empty bytes if model isn't loaded
+
         self.is_processing = True
-        
+        request_start_time = time.time()
+        audio_bytes = b""
+
         try:
-            # Get complete audio data
-            audio_data = await asyncio.to_thread(self.text_to_speech, text)
-            return audio_data
-        except Exception as e:
-            logger.error(f"Async TTS error: {e}")
-            raise
+            # Run the blocking model.generate call in a separate thread
+            wav_tensor = await asyncio.to_thread(self._generate_sync, text)
+            
+            if wav_tensor is None or (isinstance(wav_tensor, torch.Tensor) and wav_tensor.nelement() == 0):
+                logger.error("Chatterbox model generated an empty or None audio tensor.")
+                return b""
+
+            # Convert the Torch tensor to WAV audio bytes in memory
+            buffer = io.BytesIO()
+            
+            # Ensure tensor is on CPU for torchaudio.save, and it's 2D [channels, samples]
+            wav_tensor_cpu = wav_tensor.cpu()
+            if wav_tensor_cpu.ndim == 1:
+                wav_tensor_cpu = wav_tensor_cpu.unsqueeze(0) # Add channel dim if it's mono [L] -> [1, L]
+            
+            torchaudio.save(buffer, wav_tensor_cpu, self.sample_rate, format="wav")
+            audio_bytes = buffer.getvalue()
+            
+            logger.info(f"Chatterbox: Generated speech audio ({len(audio_bytes)} bytes). Processing time: {(time.time() - request_start_time):.2f}s")
+
+        except RuntimeError as e: # Catch errors from _generate_sync if model is bad
+            logger.error(f"ChatterboxTTS runtime error in text_to_speech: {e}", exc_info=True)
+        except Exception as e: # Catch other unexpected errors
+            logger.error(f"Unexpected error during Chatterbox audio generation: {e}", exc_info=True)
         finally:
+            self.last_processing_time = time.time() - request_start_time
             self.is_processing = False
-    
+
+        if not audio_bytes:
+             logger.warning("ChatterboxTTSClient: async_text_to_speech is returning empty audio bytes. This may indicate an issue with TTS generation.")
+        return audio_bytes
+
     def get_config(self) -> Dict[str, Any]:
         """
-        Get the current configuration.
-        
-        Returns:
-            Dict containing the current configuration
+        Get the current configuration and state of the ChatterboxTTSClient.
         """
         return {
-            "api_endpoint": self.api_endpoint,
-            "model": self.model,
-            "voice": self.voice,
-            "output_format": self.output_format,
-            "speed": self.speed,
-            "timeout": self.timeout,
-            "chunk_size": self.chunk_size,
+            "engine_type": "chatterbox-tts",
+            "configured_device_setting": self.device_setting,
+            "actual_device_used": self.actual_device,
+            "model_loaded_successfully": self.model is not None,
+            "model_sample_rate": self.sample_rate if self.model else "N/A",
             "is_processing": self.is_processing,
-            "last_processing_time": self.last_processing_time
+            "last_processing_time_seconds": f"{self.last_processing_time:.2f}"
         }
