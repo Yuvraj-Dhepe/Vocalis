@@ -59,13 +59,12 @@ class GraniteTranscriber:
             self.model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name).to(self.device)
             self.model.eval() # Set model to evaluation mode
 
-            # Pre-build resampler if input and target sample rates differ
             if self.input_sample_rate != self.model_target_sample_rate:
                 self.resampler = T.Resample(
                     orig_freq=self.input_sample_rate,
                     new_freq=self.model_target_sample_rate
                 ).to(self.device)
-                logger.info(f"Resampler configured: {self.input_sample_rate}Hz -> {self.model_target_sample_rate}Hz")
+                logger.info(f"Resampler configured for input: {self.input_sample_rate}Hz -> {self.model_target_sample_rate}Hz")
             else:
                 self.resampler = None
 
@@ -94,73 +93,55 @@ class GraniteTranscriber:
             waveform, sr = torchaudio.load(audio_file)
             waveform = waveform.to(self.device)
 
-            # Ensure mono
-            if waveform.shape[0] > 1:
+            if waveform.shape[0] > 1: # Ensure mono
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+            current_resampler_to_use = None
+            if sr != self.model_target_sample_rate:
+                if self.resampler and sr == self.input_sample_rate:
+                    current_resampler_to_use = self.resampler
+                else:
+                    logger.warning(f"Audio SR ({sr}Hz) differs from configured input SR ({self.input_sample_rate}Hz) or target SR. Creating dynamic resampler {sr}Hz -> {self.model_target_sample_rate}Hz.")
+                    current_resampler_to_use = T.Resample(orig_freq=sr, new_freq=self.model_target_sample_rate).to(self.device)
             
-            # Resample if necessary
-            if self.resampler and sr != self.model_target_sample_rate:
-                if sr != self.input_sample_rate: # If loaded SR is not what we configured for resampler
-                    # This case might happen if WAV file has different SR than expected
-                    # Re-create resampler on the fly or log warning
-                    logger.warning(f"Audio SR ({sr}Hz) differs from expected input SR ({self.input_sample_rate}Hz). Re-initializing resampler.")
-                    current_resampler = T.Resample(orig_freq=sr, new_freq=self.model_target_sample_rate).to(self.device)
-                    waveform = current_resampler(waveform)
-                else: # SR matches expected input for resampler
-                    waveform = self.resampler(waveform)
-            elif sr != self.model_target_sample_rate:
-                 # No pre-built resampler, but SR mismatch exists
-                logger.warning(f"Audio SR ({sr}Hz) differs from model target SR ({self.model_target_sample_rate}Hz) and no pre-built resampler. Attempting dynamic resampling.")
-                current_resampler = T.Resample(orig_freq=sr, new_freq=self.model_target_sample_rate).to(self.device)
-                waveform = current_resampler(waveform)
+            if current_resampler_to_use:
+                waveform = current_resampler_to_use(waveform)
 
-
-            # Prepare text prompt for Granite model (as per Hugging Face example)
-            # Using a simplified system prompt for transcription purposes.
-            chat_prompt = [
+            chat_prompt_messages = [
                 {"role": "system", "content": "You are an ASR system. Transcribe the audio accurately."},
                 {"role": "user", "content": "<|audio|>Transcribe the provided audio snippet."},
             ]
             text_input_for_prompt = self.processor.tokenizer.apply_chat_template(
-                chat_prompt, tokenize=False, add_generation_prompt=True
+                chat_prompt_messages, tokenize=False, add_generation_prompt=True
             )
 
-            # Process audio and text prompt
-            # The processor expects a 1D numpy array or list of floats for audio.
-            # Waveform is currently a 2D tensor [1, num_samples], so squeeze and convert.
-            processed_audio = waveform.squeeze().cpu().numpy()
+            processed_audio_input = waveform.squeeze().cpu().numpy()
 
             model_inputs = self.processor(
                 text=text_input_for_prompt,
-                audio=processed_audio,
-                sampling_rate=self.model_target_sample_rate, # Pass the sample rate of the audio given to processor
+                audio=processed_audio_input,
+                sampling_rate=self.model_target_sample_rate,
                 return_tensors="pt",
             ).to(self.device)
 
-            # Generate transcription
-            # Adjust generation parameters as needed, e.g., num_beams for quality vs. speed
             generated_outputs = self.model.generate(
                 **model_inputs,
-                max_new_tokens=256, # Max length of the transcription
-                num_beams=3,        # Beam search can improve quality
-                # temperature=1.0,    # Default, for less random transcription
-                # do_sample=False,    # Default for generate if num_beams > 1
+                max_new_tokens=256,
+                num_beams=3,
             )
             
-            # Decode the generated tokens, removing the prompt part
-            # This logic is specific to how Granite models with text prompts return outputs.
             num_input_tokens = model_inputs["input_ids"].shape[-1]
-            # Ensure generated_outputs is correctly indexed if it's a sequence/tuple
-            output_ids = generated_outputs[0] if isinstance(generated_outputs, (list, tuple)) else generated_outputs
-            
-            # Check if output_ids has enough tokens
+            output_ids = generated_outputs[0]
+
             if output_ids.shape[-1] <= num_input_tokens:
-                transcription = "" # Or handle as an error/empty transcription
-                logger.warning("Not enough tokens in output to decode transcription after prompt.")
+                transcription = ""
+                logger.warning("Not enough tokens in STT output to decode transcription after prompt.")
             else:
-                new_tokens = torch.unsqueeze(output_ids[num_input_tokens:], dim=0)
+                new_tokens_ids = output_ids[num_input_tokens:]
+                new_tokens_ids_batched = torch.unsqueeze(new_tokens_ids, dim=0)
+
                 transcription = self.processor.tokenizer.batch_decode(
-                    new_tokens, skip_special_tokens=True, add_special_tokens=False
+                    new_tokens_ids_batched, skip_special_tokens=True, add_special_tokens=False
                 )[0].strip()
 
             processing_time = time.time() - start_time
@@ -168,8 +149,7 @@ class GraniteTranscriber:
             
             metadata = {
                 "processing_time": processing_time,
-                "language": "en", # Assuming English for now as per typical Granite use
-                # Granite generate doesn't directly give segment confidence like faster-whisper
+                "language": "en",
             }
             
             return transcription, metadata
@@ -191,14 +171,3 @@ class GraniteTranscriber:
             "model_target_sample_rate": self.model_target_sample_rate,
             "is_processing": self.is_processing,
         }
-
-```
-A few notes on the implementation:
-- The `audio_bytes` input is assumed to be loadable by `torchaudio.load` (e.g. WAV format). The existing code in `websocket.py` decodes base64 audio and passes bytes, which should be fine.
-- Resampling is handled. I added a check in case the loaded audio's SR doesn't match the `input_sample_rate` used to initialize the pre-built resampler.
-- The Granite model uses a chat-like prompt structure that includes an `<|audio|>` tag. I've adapted this from the Hugging Face example.
-- Decoding the output requires stripping the input prompt tokens, which is also adapted from the example.
-- Error handling for `generated_outputs` shape is added.
-- Basic metadata (processing time, language) is returned. Detailed confidence scores per segment are not standard with this `generate` approach.
-
-Next, I need to update `backend/main.py` to use this new `GraniteTranscriber` and the new config values.
