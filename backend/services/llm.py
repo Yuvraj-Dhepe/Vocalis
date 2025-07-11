@@ -70,7 +70,40 @@ class OllamaClient:
             num_to_keep_from_end = max_history_len - len(preserved_prefix)
             self.conversation_history = preserved_prefix + self.conversation_history[-num_to_keep_from_end:]
 
-    def get_response(self, user_input: str, system_prompt: Optional[str] = None, 
+    def set_user_context(self, user_name: str) -> bool:
+        """
+        Initialize or update the conversation context with user information.
+        """
+        if not user_name:
+            return False
+
+        context_message = {
+            "role": "system",
+            "content": f"USER CONTEXT: The user's name is {user_name}."
+        }
+
+        # Find if a user context message already exists
+        user_context_index = -1
+        for i, msg in enumerate(self.conversation_history):
+            if msg.get("role") == "system" and "USER CONTEXT:" in msg.get("content", ""):
+                user_context_index = i
+                break
+        
+        if user_context_index != -1:
+            # Replace existing context message
+            self.conversation_history[user_context_index] = context_message
+            logger.info(f"Updated user context in conversation history for user: {user_name}")
+        else:
+            # Insert after the main system prompt if it exists
+            insertion_point = 0
+            if self.conversation_history and self.conversation_history[0]["role"] == "system":
+                insertion_point = 1
+            self.conversation_history.insert(insertion_point, context_message)
+            logger.info(f"Added user context to conversation history for user: {user_name}")
+            
+        return True
+
+    def get_response(self, user_input: str, system_prompt: Optional[str] = None,
                     add_to_history: bool = True, temperature: Optional[float] = None) -> Dict[str, Any]:
         """
         Get a response from the Ollama LLM for the given user_input.

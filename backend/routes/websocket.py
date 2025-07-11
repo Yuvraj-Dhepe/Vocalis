@@ -219,10 +219,7 @@ class WebSocketManager:
             audio_data: Raw audio data
         """
         try:
-            # We're receiving WAV data, so we need to parse the WAV header
-            # WAV format: 44-byte header followed by PCM data
-            # Let whisper handle the WAV data directly - it can parse WAV headers
-            audio_array = np.frombuffer(audio_data, dtype=np.uint8)
+            # The audio_data is in bytes (WAV format), which is what the transcriber expects.
             
             # Interrupt any ongoing TTS playback
             if self.tts_client.is_processing:
@@ -237,9 +234,9 @@ class WebSocketManager:
                         logger.info("Previous audio task cancelled")
             
             # Process the audio segment in a background task
-            # Whisper will handle voice activity detection internally
+            # The transcriber service will handle the WAV data directly.
             self.current_audio_task = asyncio.create_task(
-                self._process_speech_segment(websocket, audio_array)
+                self._process_speech_segment(websocket, audio_data)
             )
             
             # Send processing status update
@@ -251,22 +248,24 @@ class WebSocketManager:
             logger.error(f"Error processing audio: {e}")
             await self._send_error(websocket, f"Audio processing error: {str(e)}")
     
-    async def _process_speech_segment(self, websocket: WebSocket, speech_audio: np.ndarray):
+    async def _process_speech_segment(self, websocket: WebSocket, speech_audio: bytes):
         """
         Process a complete speech segment.
         
         Args:
             websocket: The WebSocket connection
-            speech_audio: Speech audio as numpy array
+            speech_audio: Speech audio as bytes (WAV format)
         """
         try:
             # Set processing flag
             self.is_processing = True
             self.interrupt_playback.clear()
             
-            # Transcribe speech
+            # Transcribe speech (run in thread to not block event loop)
             await self._send_status(websocket, "transcribing", {})
-            transcript, metadata = self.transcriber.transcribe(speech_audio)
+            transcript, metadata = await asyncio.to_thread(
+                self.transcriber.transcribe, speech_audio
+            )
             
             # Send transcription result
             await websocket.send_json({
@@ -307,18 +306,22 @@ class WebSocketManager:
                 # Enhance user query with vision context reference
                 enhanced_transcript = f"{transcript} [Note: This question refers to the image I just analyzed.]"
                 
-                # Get LLM response with vision-aware context
+                # Get LLM response with vision-aware context (run in thread)
                 await self._send_status(websocket, "processing_llm", {"has_vision_context": True})
-                llm_response = self.llm_client.get_response(enhanced_transcript, self.system_prompt)
+                llm_response = await asyncio.to_thread(
+                    self.llm_client.get_response, enhanced_transcript, self.system_prompt
+                )
                 
                 # Clear vision context after use to avoid affecting future non-vision conversations
                 # Only clear after successful processing
                 self.current_vision_context = None
                 logger.info("Vision context processed and cleared")
             else:
-                # Normal non-vision processing
+                # Normal non-vision processing (run in thread)
                 await self._send_status(websocket, "processing_llm", {})
-                llm_response = self.llm_client.get_response(transcript, self.system_prompt)
+                llm_response = await asyncio.to_thread(
+                    self.llm_client.get_response, transcript, self.system_prompt
+                )
             
             # Send LLM response
             await websocket.send_json({
@@ -503,37 +506,18 @@ class WebSocketManager:
 
     def _initialize_conversation_context(self):
         """
-        Initialize or update the conversation context with user information.
-        This ensures the LLM has access to the user's name throughout the conversation.
+        Initialize or update the conversation context with user information
+        by calling the appropriate method on the LLM client.
         """
-        # Check if user has a name
         user_name = self._get_user_name()
-        if not user_name:
-            logger.info("No user name set, skipping context initialization")
-            return False
-            
-        logger.info(f"Initializing conversation context with user name: {user_name}")
-        
-        # Format the context message
-        context_message = {
-            "role": "system",
-            "content": f"USER CONTEXT: The user's name is {user_name}."
-        }
-        
-        # Check if we already have a system prompt as the first message
-        if self.llm_client.conversation_history and self.llm_client.conversation_history[0]["role"] == "system":
-            # Check if we already have a user context message
-            if len(self.llm_client.conversation_history) > 1 and "USER CONTEXT" in self.llm_client.conversation_history[1].get("content", ""):
-                # Replace existing context message
-                self.llm_client.conversation_history[1] = context_message
-            else:
-                # Insert after system prompt
-                self.llm_client.conversation_history.insert(1, context_message)
+        if user_name:
+            # Delegate context setting to the LLM client
+            self.llm_client.set_user_context(user_name)
+            logger.info(f"Set user context in LLM client for user: {user_name}")
+            return True
         else:
-            # No system prompt, add context as first message
-            self.llm_client.conversation_history.insert(0, context_message)
-            
-        return True
+            logger.info("No user name set, skipping context initialization.")
+            return False
 
     async def _handle_greeting(self, websocket: WebSocket):
         """
@@ -551,9 +535,15 @@ class WebSocketManager:
             instruction = self._get_greeting_prompt(is_returning_user=has_history)
             
             # Get response from LLM without adding to conversation history, with moderate temperature
-            # Use instruction as user message, not as system message
+            # Use instruction as user message, not as system message (run in thread)
             logger.info("Generating greeting")
-            llm_response = self.llm_client.get_response(instruction, self.system_prompt, add_to_history=False, temperature=0.7)
+            llm_response = await asyncio.to_thread(
+                self.llm_client.get_response,
+                instruction,
+                self.system_prompt,
+                add_to_history=False,
+                temperature=0.7
+            )
             
             # Restore saved conversation history
             self.llm_client.conversation_history = saved_history
@@ -610,9 +600,15 @@ class WebSocketManager:
             # Select appropriate silence indicator based on tier
             user_input = "[silent]" if tier == 0 else "[no response]" if tier == 1 else "[still waiting]"
             
-            # Generate the follow-up with the silence indicator as user input
+            # Generate the follow-up with the silence indicator as user input (run in thread)
             logger.info(f"Generating contextual follow-up (tier {tier+1})")
-            llm_response = self.llm_client.get_response(user_input, self.system_prompt, add_to_history=False, temperature=0.7)
+            llm_response = await asyncio.to_thread(
+                self.llm_client.get_response,
+                user_input,
+                self.system_prompt,
+                add_to_history=False,
+                temperature=0.7
+            )
             
             # Restore original conversation history
             self.llm_client.conversation_history = full_history

@@ -55,8 +55,8 @@ class GraniteTranscriber:
     def _initialize_model(self):
         """Initialize Granite model and processor."""
         try:
-            self.processor = AutoProcessor.from_pretrained(self.model_name)
-            self.model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name).to(self.device)
+            self.processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+            self.model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name, trust_remote_code=True).to(self.device)
             self.model.eval() # Set model to evaluation mode
 
             if self.input_sample_rate != self.model_target_sample_rate:

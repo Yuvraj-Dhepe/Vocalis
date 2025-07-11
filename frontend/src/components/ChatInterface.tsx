@@ -440,7 +440,7 @@ const ChatInterface: React.FC = () => {
     const handleTTSChunk = (data: any) => {
       if (data.audio_chunk) {
         console.log(`Received TTS chunk (${data.audio_chunk.length} chars), sending to audio service`);
-        audioService.playAudioChunk(data.audio_chunk, data.format || 'mp3');
+        audioService.playAudioChunk(data.audio_chunk, data.format || 'wav');
       }
     };
     
@@ -574,9 +574,8 @@ const ChatInterface: React.FC = () => {
       const timer = setTimeout(() => {
         // When timer fires, check if we're still in a state where a follow-up makes sense
         // If we've moved to processing, speaking, or greeting in the meantime, we should abort
-        if (assistantState === 'processing' || assistantState === 'speaking' || 
-            assistantState === 'greeting' || preventFollowUp) {
-          console.log(`Follow-up timer fired but state is now ${assistantState} - aborting follow-up`);
+        if (preventFollowUp) {
+          console.log(`Follow-up timer fired but follow-ups are prevented - aborting follow-up`);
           return;
         }
         
@@ -596,12 +595,11 @@ const ChatInterface: React.FC = () => {
           // 4. Audio must be inactive (not recording or playing)
           // 5. Follow-ups must not be prevented by recent call end
           if (
-            assistantState === 'idle' && 
-            assistantState !== 'processing' &&  // Double-check processing state
-            !potentialSpeechActivity &&  // No audio activity (even low-level background noise)
-            isConnected && 
+            assistantState === 'idle' &&
+            !potentialSpeechActivity &&
+            isConnected &&
             audioState === AudioState.INACTIVE &&
-            !preventFollowUp  // Make sure follow-ups are allowed
+            !preventFollowUp
           ) {
             console.log(`No speech detected during listening window, sending follow-up (tier ${followUpTier + 1})`);
             console.log(`Final audio state check: ${audioState}`);

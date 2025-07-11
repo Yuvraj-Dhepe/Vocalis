@@ -8,7 +8,8 @@ python-multipart==0.0.9
 torch>=2.0.1
 torchaudio>=2.0.1
 ffmpeg-python==0.2.0
-transformers==4.46.3 # Updated to match chatterbox-tts dependency
+chatterbox-tts
+transformers
 soundfile~=0.12.1
 ollama==0.5.1
-chatterbox-tts~=0.1.2
+

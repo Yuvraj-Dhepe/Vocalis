@@ -202,20 +202,10 @@ export class WebSocketService {
   /**
    * Send audio data to the WebSocket server
    */
-  public sendAudio(audioData: Float32Array | ArrayBuffer): boolean {
-    // Convert to base64 if Float32Array
-    let base64Data: string;
-    
-    if (audioData instanceof Float32Array) {
-      // Create a buffer from the Float32Array
-      const buffer = new ArrayBuffer(audioData.length * 4); // 4 bytes per float
-      const view = new Float32Array(buffer);
-      view.set(audioData);
-      
-      base64Data = this.arrayBufferToBase64(buffer);
-    } else {
-      base64Data = this.arrayBufferToBase64(audioData);
-    }
+  public sendAudio(audioData: ArrayBuffer): boolean {
+    // The audio data should be a complete WAV file in an ArrayBuffer.
+    // Convert the ArrayBuffer to a base64 string for JSON transport.
+    const base64Data = this.arrayBufferToBase64(audioData);
     
     return this.send(MessageType.AUDIO, {
       audio_data: base64Data
