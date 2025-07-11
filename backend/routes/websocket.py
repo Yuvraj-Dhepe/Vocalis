@@ -15,9 +15,10 @@ from fastapi import WebSocket, WebSocketDisconnect, BackgroundTasks
 from pydantic import BaseModel
 from datetime import datetime
 
-from ..services.transcription import WhisperTranscriber
-from ..services.llm import LLMClient
-from ..services.tts import TTSClient
+# Updated service imports
+from ..services.transcription import GraniteTranscriber
+from ..services.llm import OllamaClient
+from ..services.tts import ChatterboxTTSClient
 from ..services.conversation_storage import ConversationStorage
 
 # Configure logging
@@ -66,17 +67,17 @@ class WebSocketManager:
     
     def __init__(
         self,
-        transcriber: WhisperTranscriber,
-        llm_client: LLMClient,
-        tts_client: TTSClient
+        transcriber: GraniteTranscriber,  # UPDATED
+        llm_client: OllamaClient,         # UPDATED
+        tts_client: ChatterboxTTSClient   # UPDATED
     ):
         """
         Initialize the WebSocket manager.
         
         Args:
-            transcriber: Whisper transcription service
-            llm_client: LLM client service
-            tts_client: TTS client service
+            transcriber: Transcription service (e.g., GraniteTranscriber)
+            llm_client: LLM client service (e.g., OllamaClient)
+            tts_client: TTS client service (e.g., ChatterboxTTSClient)
         """
         self.transcriber = transcriber
         self.llm_client = llm_client
@@ -370,7 +371,7 @@ class WebSocketManager:
             await websocket.send_json({
                 "type": MessageType.TTS_CHUNK,
                 "audio_chunk": encoded_audio,
-                "format": self.tts_client.output_format,
+                "format": "wav", # UPDATED - Chatterbox client produces WAV
                 "timestamp": datetime.now().isoformat()
             })
             
@@ -1187,18 +1188,18 @@ class WebSocketManager:
 
 async def websocket_endpoint(
     websocket: WebSocket,
-    transcriber: WhisperTranscriber,
-    llm_client: LLMClient,
-    tts_client: TTSClient
+    transcriber: GraniteTranscriber,    # UPDATED
+    llm_client: OllamaClient,           # UPDATED
+    tts_client: ChatterboxTTSClient     # UPDATED
 ):
     """
     FastAPI WebSocket endpoint.
     
     Args:
         websocket: The WebSocket connection
-        transcriber: Whisper transcription service
-        llm_client: LLM client service
-        tts_client: TTS client service
+        transcriber: Transcription service instance
+        llm_client: LLM client service instance
+        tts_client: TTS client service instance
     """
     # Create WebSocket manager
     manager = WebSocketManager(transcriber, llm_client, tts_client)
