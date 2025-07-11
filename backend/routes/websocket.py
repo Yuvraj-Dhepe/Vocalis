@@ -18,7 +18,7 @@ from datetime import datetime
 # Updated service imports
 from ..services.transcription import GraniteTranscriber
 from ..services.llm import OllamaClient
-from ..services.tts import ChatterboxTTSClient
+from ..services.tts import RealtimeTTSClient # MODIFIED for RealtimeTTS
 from ..services.conversation_storage import ConversationStorage
 
 # Configure logging
@@ -69,7 +69,7 @@ class WebSocketManager:
         self,
         transcriber: GraniteTranscriber,  # UPDATED
         llm_client: OllamaClient,         # UPDATED
-        tts_client: ChatterboxTTSClient   # UPDATED
+        tts_client: RealtimeTTSClient     # MODIFIED for RealtimeTTS
     ):
         """
         Initialize the WebSocket manager.
@@ -77,7 +77,7 @@ class WebSocketManager:
         Args:
             transcriber: Transcription service (e.g., GraniteTranscriber)
             llm_client: LLM client service (e.g., OllamaClient)
-            tts_client: TTS client service (e.g., ChatterboxTTSClient)
+            tts_client: TTS client service (e.g., RealtimeTTSClient)
         """
         self.transcriber = transcriber
         self.llm_client = llm_client
@@ -1186,7 +1186,7 @@ async def websocket_endpoint(
     websocket: WebSocket,
     transcriber: GraniteTranscriber,    # UPDATED
     llm_client: OllamaClient,           # UPDATED
-    tts_client: ChatterboxTTSClient     # UPDATED
+    tts_client: RealtimeTTSClient       # MODIFIED for RealtimeTTS
 ):
     """
     FastAPI WebSocket endpoint.
