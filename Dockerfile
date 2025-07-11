@@ -7,14 +7,21 @@ ENV PYTHONUNBUFFERED 1
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
 
+# Set the timezone to UTC to avoid interactive prompts or unexpected defaults.
+# This ensures a consistent timezone within the container.
+ENV TZ=Etc/UTC
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 # System dependencies for Ubuntu base (pytorch image is Ubuntu based)
 # espeak-ng and libespeak-ng1 are for pyttsx3
 # ffmpeg is generally useful for audio/video operations
 # git is good to have for some pip installs, though not strictly needed by current reqs
+# tzdata is installed to ensure timezone data is available for the TZ environment variable to work correctly.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
+    tzdata \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
