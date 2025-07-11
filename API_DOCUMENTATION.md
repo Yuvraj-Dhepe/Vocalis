@@ -5,12 +5,11 @@ The primary interaction with the Vocalis assistant is intended through its WebSo
 
 ## Authentication
 
-All REST API endpoints require an API key for authentication. The API key must be included in the `X-API-Key` header of your request.
+Previously, REST API endpoints required an API key. However, for the local REST endpoints (`/api/stt`, `/api/tts`), this is currently **not enforced** in the backend code. The `X-API-Key` header might be ignored.
 
-Example Header:
-`X-API-Key: your_secret_api_key`
-
-If the API key is missing or invalid, the server will respond with a `401 Unauthorized` error.
+If authentication were active:
+The API key would be included in the `X-API-Key` header of your request.
+Example Header: `X-API-Key: your_secret_api_key`
 The API key can be configured via the `VOCALIS_API_KEY` environment variable in the `backend/.env` file (default is "development_secret_key").
 
 ## Endpoints
@@ -75,13 +74,13 @@ Converts spoken audio into text using the configured STT engine (IBM Granite).
 
 ### 2. Text-to-Speech (TTS)
 
-Converts provided text into synthesized speech audio using the configured TTS engine (pyttsx3).
+Converts provided text into synthesized speech audio using the **RealtimeTTS library (defaulting to SystemEngine)**.
 
 -   **URL:** `/api/tts`
 -   **Method:** `POST`
 -   **Headers:**
-    -   `X-API-Key: <your_api_key>`
     -   `Content-Type: application/json`
+    -   `X-API-Key: <your_api_key>` (Currently not enforced for this endpoint)
 -   **Request Body (JSON):**
     ```json
     {
@@ -98,7 +97,7 @@ Converts provided text into synthesized speech audio using the configured TTS en
           "detail": "Text for TTS cannot be empty."
         }
         ```
-    -   `401 Unauthorized`: If `X-API-Key` is missing or invalid.
+    -   `401 Unauthorized`: If `X-API-Key` were enforced and was missing or invalid.
         ```json
         {
           "detail": "Invalid or missing API Key"
@@ -110,6 +109,7 @@ Converts provided text into synthesized speech audio using the configured TTS en
           "detail": "TTS engine failed to produce audio for the given text."
         }
         ```
+        (The exact error message from the server might vary)
     -   `503 Service Unavailable`: If the TTS service is not initialized.
         ```json
         {
@@ -120,10 +120,10 @@ Converts provided text into synthesized speech audio using the configured TTS en
 -   **Example Usage (curl):**
     ```bash
     curl -X POST \
-      -H "X-API-Key: development_secret_key" \
       -H "Content-Type: application/json" \
       -d '{"text": "Hello world, this is a test."}' \
       --output speech_output.wav \
       http://localhost:8000/api/tts
     ```
     This will save the output WAV audio to `speech_output.wav`.
+    (Note: `X-API-Key` header removed from example as it's not currently enforced).

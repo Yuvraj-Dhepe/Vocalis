@@ -22,6 +22,7 @@ RUN apt-get update && \
     ffmpeg \
     git \
     tzdata \
+    portaudio19-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

@@ -7,11 +7,11 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109.2-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Hugging Face Transformers](https://img.shields.io/badge/🤗%20Transformers-STT%20Models-yellow)](https://huggingface.co/docs/transformers/index)
 [![Ollama](https://img.shields.io/badge/Ollama-LLM%20Integration-blue)](https://ollama.com/)
-[![pyttsx3](https://img.shields.io/badge/pyttsx3-Offline%20TTS-orange)](https://pypi.org/project/pyttsx3/)
+[![RealtimeTTS](https://img.shields.io/badge/RealtimeTTS-Offline%20TTS-orange)](https://github.com/KoljaB/RealtimeTTS)
 [![Python](https://img.shields.io/badge/Python-3.10-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Containerized-blue?logo=docker)](https://www.docker.com/)
 
-A sophisticated AI assistant with speech-to-speech capabilities built on a modern React frontend and a FastAPI backend. Vocalis utilizes **IBM Granite** for Speech-to-Text, **Ollama** for Large Language Model interactions, and **pyttsx3 (Chatterbox)** for Text-to-Speech, all containerized with Docker for easy deployment. It provides a responsive, low-latency conversational experience with advanced visual feedback.
+A sophisticated AI assistant with speech-to-speech capabilities built on a modern React frontend and a FastAPI backend. Vocalis utilizes **IBM Granite** for Speech-to-Text, **Ollama** for Large Language Model interactions, and **RealtimeTTS (SystemEngine by default)** for Text-to-Speech, all containerized with Docker for easy deployment. It provides a responsive, low-latency conversational experience with advanced visual feedback.
 
 ## Video Demonstration of Setup and Usage
 
@@ -232,9 +232,9 @@ Vocalis integrates the following core services for its speech and language proce
 
 - **Speech-to-Text (STT)**: Utilizes **IBM Granite** (specifically `ibm-granite/granite-speech-3.3-2b`) via the Hugging Face `transformers` library. This model provides accurate speech transcription. Configuration is managed by `STT_MODEL_NAME` in `backend/.env`.
 
-- **Large Language Model (LLM)**: Connects to an external **Ollama server**. You need to have Ollama running and have pulled a model (e.g., Llama3, Mistral). The connection URL is configured via `OLLAMA_HOST` (default `http://localhost:11434`) and the model via `OLLAMA_MODEL` (default `llama3`) in `backend/.env`.
+- **Large Language Model (LLM)**: Connects to an external **Ollama server**. You need to have Ollama running and have pulled a model (e.g., Llama3, Mistral). The connection URL is configured via `OLLAMA_HOST` (default `http://host.docker.internal:11434` when using Docker, or `http://localhost:11434` for local runs) and the model via `OLLAMA_MODEL` (default `llama3`) in `backend/.env`.
 
-- **Text-to-Speech (TTS)**: Integrates **Resemble AI's Chatterbox** (`chatterbox-tts` Python library) for high-quality, local Text-to-Speech synthesis. Configuration for the compute device (`TTS_DEVICE` accepting "auto", "cuda", or "cpu") can be found in `backend/.env`.
+- **Text-to-Speech (TTS)**: Integrates **RealtimeTTS** library (defaulting to `SystemEngine`) for local Text-to-Speech synthesis. `SystemEngine` typically uses CPU and system-provided TTS voices. Configuration for the compute device (`TTS_DEVICE` accepting "auto", "cuda", or "cpu") in `backend/.env` may have limited effect on `SystemEngine` but is available for other RealtimeTTS engines if configured.
 
 These services are orchestrated by the FastAPI backend to provide the full speech-to-speech workflow. Configuration for these and other parameters is primarily managed in the `backend/.env` file.
 
@@ -300,7 +300,7 @@ graph TB
         VAD[Custom Voice Activity Detection]
         IBMGraniteSTT[IBM Granite STT]
         OllamaClient[Ollama Client]
-        ChatterboxTTS[Chatterbox TTS]
+        RealtimeTTS[RealtimeTTS (SystemEngine)]
         AudioProcessing[Audio Processing]
         VisionService[SmolVLM Vision Service]
         StorageService[Conversation Storage]
@@ -333,13 +333,13 @@ graph TB
     
     OllamaClient -->|API Request| OllamaServer
     OllamaServer -->|Response Text| OllamaClient
-    OllamaClient -->|Response Text| ChatterboxTTS
-    ChatterboxTTS -->|Synthesized Audio| WSServer
+    OllamaClient -->|Response Text| RealtimeTTS
+    RealtimeTTS -->|Synthesized Audio| WSServer
     WSServer -->|Audio Response| WebSocket
     WebSocket --> AudioOutput
     EnvConfig -->|Configuration| IBMGraniteSTT
     EnvConfig -->|Configuration| OllamaClient
-    EnvConfig -->|Configuration| ChatterboxTTS
+    EnvConfig -->|Configuration| RealtimeTTS
     EnvConfig -->|Configuration| VisionService
     EnvConfig -->|Configuration| StorageService
     UIState <--> WebSocket
@@ -388,7 +388,7 @@ graph TD
         subgraph "Services"
             BE_Transcription[IBM Granite STT & VAD]
             BE_LLM[Ollama Client]
-            BE_TTS[Chatterbox TTS]
+            BE_TTS[RealtimeTTS (SystemEngine)]
             BE_Vision[SmolVLM Vision Service]
             BE_Storage[Conversation Storage]
         end
@@ -424,7 +424,7 @@ graph TD
     BE_LLM -->|API Request| Ollama_Srv
     Ollama_Srv -->|Response Text| BE_LLM
     BE_LLM -->|Response Text| BE_TTS
-    BE_TTS -->|Synthesized Audio Data| BE_WebSocket # Chatterbox (as library) is internal
+    BE_TTS -->|Synthesized Audio Data| BE_WebSocket # RealtimeTTS (as library) is internal
     
     BE_WebSocket -->|Audio Response| FE_WebSocket
     FE_WebSocket -->|Audio Data| FE_AudioService
@@ -533,7 +533,7 @@ sequenceDiagram
     participant VisionService as Vision Service (SmolVLM)
     participant StorageService as Conversation Storage
     participant LLM as Ollama Server
-    participant TTS as Chatterbox TTS Engine (Internal)
+    participant TTS as RealtimeTTS (SystemEngine, Internal)
     
     Note over Frontend,TTS: Normal Speech Flow
     
@@ -545,7 +545,7 @@ sequenceDiagram
     activate LLM
     LLM-->>Backend: Text response
     deactivate LLM
-    Note over Backend: Begin TTS processing (Chatterbox)
+    Note over Backend: Begin TTS processing (RealtimeTTS)
     Backend->>TTS: Request TTS synthesis
     activate TTS
     TTS-->>Backend: Complete audio data (WAV)
@@ -582,7 +582,7 @@ sequenceDiagram
     activate LLM
     LLM-->>Backend: Image-informed response
     deactivate LLM
-    Backend->>TTS: Request TTS (Chatterbox)
+    Backend->>TTS: Request TTS (RealtimeTTS)
     activate TTS
     TTS-->>Backend: Complete audio data
     deactivate TTS
@@ -616,7 +616,7 @@ sequenceDiagram
         activate LLM
         LLM-->>Backend: Follow-up response
         deactivate LLM
-    Backend->>TTS: Convert to speech (Chatterbox)
+    Backend->>TTS: Convert to speech (RealtimeTTS)
         activate TTS
     TTS-->>Backend: Complete follow-up audio
         deactivate TTS
@@ -736,13 +736,17 @@ LLM response time depends on the model loaded into the **Ollama server** and the
 
 ### TTS Performance
 
-**Resemble AI's Chatterbox** is used for TTS. Performance will depend on the complexity of the text and the hardware (CPU/GPU) it runs on. It's designed for high quality and good performance. The `TTS_DEVICE` setting in `backend/.env` can be used to specify CPU or CUDA.
+**RealtimeTTS** is used for TTS, defaulting to `SystemEngine`.
+-   `SystemEngine`: Performance depends on the underlying OS TTS capabilities (e.g., eSpeak-ng on Linux, SAPI5 on Windows, NSSpeechSynthesizer on macOS). It's generally CPU-bound and lightweight. Latency is typically low.
+-   Other RealtimeTTS engines (e.g., `CoquiEngine`, `OpenAIEngine`) can be configured and would have different performance characteristics, some benefiting from GPU.
+The `TTS_DEVICE` setting in `backend/.env` is available, but its effect is engine-dependent (most relevant for engines like CoquiEngine if GPU is used).
 
 ### Customising Performance
 
 - **STT Model**: Choose a smaller or larger STT model via `STT_MODEL_NAME` (if other compatible HuggingFace models are used) for a trade-off between speed and accuracy.
 - **LLM Model**: Select different models in your Ollama server and configure `OLLAMA_MODEL` in `backend/.env`. Smaller Ollama models will generally be faster.
-- **Hardware**: Running the backend on a machine with a CUDA-capable GPU will significantly speed up STT if a GPU-compatible STT model is used and correctly configured. Ollama server performance also heavily depends on its host hardware.
+- **TTS Engine**: Advanced users can modify `backend/services/tts.py` to use a different engine from the RealtimeTTS library (e.g., `CoquiEngine` for higher quality local TTS, which may require GPU and specific model downloads). This would involve changing `SystemEngine()` to `CoquiEngine()` and potentially adjusting dependencies in `requirements.txt` (e.g., `realtimetts[coqui]`).
+- **Hardware**: Running the backend on a machine with a CUDA-capable GPU will significantly speed up STT (if a GPU-compatible model is used) and potentially some RealtimeTTS engines (like CoquiEngine). Ollama server performance also heavily depends on its host hardware.
 
 ## Project Structure
 
@@ -815,7 +819,7 @@ ffmpeg-python==0.2.0
 transformers~=4.40.0
 soundfile~=0.12.1
 ollama==0.5.1
-pyttsx3==2.90
+realtimetts[system] # Or realtimetts[all] if that was chosen
 ```
 
 ### Frontend

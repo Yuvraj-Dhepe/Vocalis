@@ -1,148 +1,169 @@
 """
-Text-to-Speech Service using Resemble AI's Chatterbox.
+Text-to-Speech Service using RealtimeTTS.
 """
 
 import asyncio
 import logging
 import time
 import io
-import torch
-import torchaudio # For saving tensor to WAV bytes
 from typing import Dict, Any
 
-# Attempt to import ChatterboxTTS, handle if not installed during early dev
 try:
-    from chatterbox.tts import ChatterboxTTS
+    from RealtimeTTS import TextToAudioStream, SystemEngine
+    # For other engines, you might import them here, e.g.:
+    # from RealtimeTTS import CoquiEngine, OpenAIEngine, AzureEngine, ElevenlabsEngine
 except ImportError:
-    ChatterboxTTS = None
-    logging.error("ChatterboxTTS library not found. Please install chatterbox-tts.")
+    TextToAudioStream = None
+    SystemEngine = None
+    logging.error("RealtimeTTS library not found. Please install RealtimeTTS (e.g., pip install realtimetts[system]).")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ChatterboxTTSClient:
+class RealtimeTTSClient:
     """
-    Text-to-Speech service using Resemble AI's Chatterbox.
+    Text-to-Speech service using RealtimeTTS.
     """
-    def __init__(self, device_setting: str = "auto"):
+    def __init__(self, device_setting: str = "auto"): # device_setting might be less relevant for SystemEngine
         """
-        Initialize the ChatterboxTTS client.
-
-        Args:
-            device_setting: Preferred device ("auto", "cuda", "cpu").
+        Initialize the RealtimeTTS client.
+        For SystemEngine, device_setting is not directly used but kept for consistency.
         """
-        self.device_setting = device_setting
-        self.actual_device = self._determine_device()
-        self.model = None
-        self.sample_rate = None # Will be set by the loaded model
+        self.engine_name = "SystemEngine" # Defaulting to SystemEngine
+        self.engine = None
+        self.stream = None
         self.is_processing = False
         self.last_processing_time = 0.0
+        self.actual_device = "cpu" # SystemEngine typically uses CPU
 
-        if ChatterboxTTS is None:
-            logger.error("ChatterboxTTS library failed to import. TTS service will be unavailable.")
+        if TextToAudioStream is None or SystemEngine is None:
+            logger.error("RealtimeTTS library components failed to import. TTS service will be unavailable.")
             return
 
         try:
-            logger.info(f"Initializing ChatterboxTTSClient with device setting: '{self.device_setting}', resolved to: '{self.actual_device}'")
-            # from_pretrained will download the model on first run if not cached by chatterbox
-            self.model = ChatterboxTTS.from_pretrained(device=self.actual_device)
-            
-            if not self.model:
-                logger.error("ChatterboxTTS.from_pretrained returned None or failed. TTS will not be available.")
-                return # Stop initialization if model loading failed
+            logger.info(f"Initializing RealtimeTTSClient with {self.engine_name}...")
+            # Here you could add logic to select different engines based on config
+            # For now, hardcoding SystemEngine
+            self.engine = SystemEngine()
+            if not self.engine:
+                logger.error(f"{self.engine_name} failed to initialize. TTS will not be available.")
+                return
 
-            self.sample_rate = self.model.sr
-            logger.info(f"Initialized ChatterboxTTSClient successfully. Model loaded on '{self.actual_device}'. Sample rate: {self.sample_rate}Hz.")
+            self.stream = TextToAudioStream(self.engine, muted=True, level=logging.WARNING) # Muted as we capture bytes
+            logger.info(f"Initialized RealtimeTTSClient with {self.engine_name} successfully.")
+
         except Exception as e:
-            logger.error(f"Failed to initialize ChatterboxTTS model: {e}", exc_info=True)
-            self.model = None # Ensure model is None if init fails
-
-    def _determine_device(self) -> str:
-        """Determines the actual device to use based on setting and availability."""
-        if self.device_setting.lower() == "cuda":
-            if torch.cuda.is_available():
-                return "cuda"
-            else:
-                logger.warning("TTS: CUDA requested but not available. Falling back to CPU.")
-                return "cpu"
-        elif self.device_setting.lower() == "cpu":
-            return "cpu"
-        else: # "auto" or any other/default value
-            if torch.cuda.is_available():
-                logger.info("TTS: Auto-detected CUDA, using GPU.")
-                return "cuda"
-            else:
-                logger.info("TTS: CUDA not available, using CPU.")
-                return "cpu"
-
-    def _generate_sync(self, text: str) -> torch.Tensor:
-        """Synchronous (blocking) method to generate speech waveform."""
-        if not self.model:
-            raise RuntimeError("ChatterboxTTS model is not initialized or failed to load.")
-        
-        # According to Chatterbox documentation, model.generate() is synchronous.
-        # It returns a Torch tensor.
-        logger.debug(f"Chatterbox sync generate for: '{text[:30]}...'")
-        wav_tensor = self.model.generate(text)
-        logger.debug("Chatterbox sync generate completed.")
-        return wav_tensor
+            logger.error(f"Failed to initialize RealtimeTTS ({self.engine_name}): {e}", exc_info=True)
+            self.engine = None
+            self.stream = None
 
     async def async_text_to_speech(self, text: str) -> bytes:
         """
-        Asynchronously convert text to speech audio bytes using Chatterbox.
+        Asynchronously convert text to speech audio bytes using RealtimeTTS.
         The generated audio is in WAV format.
         """
-        if not self.model:
-            logger.error("Cannot generate speech: ChatterboxTTS model is not available.")
-            return b"" # Return empty bytes if model isn't loaded
+        if not self.stream or not self.engine:
+            logger.error("Cannot generate speech: RealtimeTTS stream or engine is not available.")
+            return b""
 
         self.is_processing = True
         request_start_time = time.time()
         audio_bytes = b""
 
+        # Using BytesIO to capture WAV output
+        wav_buffer = io.BytesIO()
+
         try:
-            # Run the blocking model.generate call in a separate thread
-            wav_tensor = await asyncio.to_thread(self._generate_sync, text)
+            logger.debug(f"RealtimeTTS ({self.engine_name}) generating for: '{text[:30]}...'")
             
-            if wav_tensor is None or (isinstance(wav_tensor, torch.Tensor) and wav_tensor.nelement() == 0):
-                logger.error("Chatterbox model generated an empty or None audio tensor.")
-                return b""
+            # Feed the text to the stream
+            self.stream.feed(text)
 
-            # Convert the Torch tensor to WAV audio bytes in memory
-            buffer = io.BytesIO()
-            
-            # Ensure tensor is on CPU for torchaudio.save, and it's 2D [channels, samples]
-            wav_tensor_cpu = wav_tensor.cpu()
-            if wav_tensor_cpu.ndim == 1:
-                wav_tensor_cpu = wav_tensor_cpu.unsqueeze(0) # Add channel dim if it's mono [L] -> [1, L]
-            
-            torchaudio.save(buffer, wav_tensor_cpu, self.sample_rate, format="wav")
-            audio_bytes = buffer.getvalue()
-            
-            logger.info(f"Chatterbox: Generated speech audio ({len(audio_bytes)} bytes). Processing time: {(time.time() - request_start_time):.2f}s")
+            # The play_async method can write to a file-like object.
+            # We need to run this part in a thread as play() itself can be blocking
+            # or manage its own async operations internally that might not align with FastAPI's loop.
+            # However, TextToAudioStream's play_async is already designed to be non-blocking.
+            # The challenge is capturing the output.
+            # Let's try using the output_wavfile parameter with a BytesIO buffer.
+            # The play_async method itself doesn't directly return bytes.
+            # It plays audio or writes to a file.
+            # The `on_audio_chunk` callback or saving to BytesIO are options.
 
-        except RuntimeError as e: # Catch errors from _generate_sync if model is bad
-            logger.error(f"ChatterboxTTS runtime error in text_to_speech: {e}", exc_info=True)
-        except Exception as e: # Catch other unexpected errors
-            logger.error(f"Unexpected error during Chatterbox audio generation: {e}", exc_info=True)
+            # According to RealtimeTTS docs, to save to a file (or BytesIO):
+            # stream.play_async(output_wavfile="temp.wav") -> this writes to disk
+            # To capture bytes, we can try:
+            # 1. Use a callback `on_audio_chunk` to accumulate bytes.
+            # 2. Use `stream.play(output_wavfile=wav_buffer)` in a thread.
+
+            # Option 2: run play() in a thread and write to BytesIO
+            def play_to_buffer():
+                self.stream.play(output_wavfile=wav_buffer) # This is blocking
+
+            # Run the blocking play method in a separate thread
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, play_to_buffer)
+            
+            wav_buffer.seek(0) # Reset buffer position to the beginning for reading
+            audio_bytes = wav_buffer.read()
+
+            if not audio_bytes:
+                 logger.warning(f"RealtimeTTS ({self.engine_name}) returned empty audio bytes.")
+            else:
+                logger.info(f"RealtimeTTS ({self.engine_name}): Generated speech audio ({len(audio_bytes)} bytes).")
+
+        except Exception as e:
+            logger.error(f"Unexpected error during RealtimeTTS ({self.engine_name}) audio generation: {e}", exc_info=True)
+            audio_bytes = b"" # Ensure empty bytes on error
         finally:
             self.last_processing_time = time.time() - request_start_time
             self.is_processing = False
+            # Clear the stream queue for the next synthesis
+            if self.stream:
+                self.stream.stop() # Stop any ongoing playback
+                # Reset or re-initialize parts of the stream if necessary.
+                # For TextToAudioStream, feeding new text implicitly clears old text.
+                # Re-creating stream or engine for each call might be too slow.
+                # Ensure stream is ready for next call.
+                # The stream.feed() should handle new text, but ensure no leftover state.
+                # Let's re-initialize the stream to be safe for now, or ensure stop() clears state.
+                # Re-initializing the stream for each call:
+                # self.stream = TextToAudioStream(self.engine, muted=True, level=logging.WARNING)
+                # This might be inefficient. Let's rely on feed and stop for now.
+                # If issues arise, re-evaluate stream re-initialization.
+                pass
+
 
         if not audio_bytes:
-             logger.warning("ChatterboxTTSClient: async_text_to_speech is returning empty audio bytes. This may indicate an issue with TTS generation.")
+             logger.warning(f"RealtimeTTSClient ({self.engine_name}): async_text_to_speech is returning empty audio bytes. This may indicate an issue with TTS generation.")
         return audio_bytes
 
     def get_config(self) -> Dict[str, Any]:
         """
-        Get the current configuration and state of the ChatterboxTTSClient.
+        Get the current configuration and state of the RealtimeTTSClient.
         """
         return {
-            "engine_type": "chatterbox-tts",
-            "configured_device_setting": self.device_setting,
-            "actual_device_used": self.actual_device,
-            "model_loaded_successfully": self.model is not None,
-            "model_sample_rate": self.sample_rate if self.model else "N/A",
+            "engine_type": "realtimetts",
+            "engine_used": self.engine_name,
+            "model_loaded_successfully": self.engine is not None and self.stream is not None,
+            "actual_device_used": self.actual_device, # Placeholder, SystemEngine specific device might not be exposed
             "is_processing": self.is_processing,
             "last_processing_time_seconds": f"{self.last_processing_time:.2f}"
         }
+
+# Example of how to use a different engine like CoquiEngine (requires GPU and more setup)
+# class RealtimeTTSClient_Coqui:
+#     def __init__(self, speaker_wav_path: str = None): # speaker_wav_path for voice cloning
+#         self.engine_name = "CoquiEngine"
+#         self.engine = None
+#         self.stream = None
+#         # ... (similar init logic) ...
+#         try:
+#             from RealtimeTTS import CoquiEngine # Import CoquiEngine
+#             logger.info(f"Initializing RealtimeTTSClient with {self.engine_name}...")
+#             # CoquiEngine might require specific parameters like a speaker WAV for cloning
+#             self.engine = CoquiEngine(voice=speaker_wav_path if speaker_wav_path else None)
+#             self.stream = TextToAudioStream(self.engine, muted=True)
+#             logger.info(f"Initialized RealtimeTTSClient with {self.engine_name} successfully.")
+#         except Exception as e:
+#             logger.error(f"Failed to initialize RealtimeTTS ({self.engine_name}): {e}", exc_info=True)
+#         # ... (async_text_to_speech and get_config would be similar) ...

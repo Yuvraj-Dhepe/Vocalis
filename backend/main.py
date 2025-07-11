@@ -21,7 +21,7 @@ from . import config
 # Import services
 from .services.transcription import GraniteTranscriber
 from .services.llm import OllamaClient
-from .services.tts import ChatterboxTTSClient # MODIFIED
+from .services.tts import RealtimeTTSClient # MODIFIED for RealtimeTTS
 from .services.vision import vision_service
 
 # Import routes
@@ -68,8 +68,10 @@ async def lifespan(app: FastAPI):
     )
     
     # Initialize TTS service
-    tts_service = ChatterboxTTSClient( # MODIFIED
-        device_setting=cfg["tts_device"]
+    # device_setting from cfg["tts_device"] might not be directly applicable to SystemEngine
+    # but kept in RealtimeTTSClient constructor for potential future use with other engines.
+    tts_service = RealtimeTTSClient(
+        device_setting=cfg.get("tts_device", "auto") # Use .get for safer access
     )
     
     # Initialize vision service (will download model if not cached)
